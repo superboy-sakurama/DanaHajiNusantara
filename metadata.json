@@ -1,0 +1,6 @@
+{
+  "name": "Keuangan Petugas Haji Puskesmas",
+  "description": "Aplikasi Web Manajemen Keuangan Tim Petugas Haji Puskesmas dengan sinkronisasi Google Sheets, ekspor PDF, dan animasi Ka'bah 4D.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
