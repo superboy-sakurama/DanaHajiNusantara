@@ -24,10 +24,11 @@ router.post('/test', async (req: Request, res: Response) => {
 });
 
 router.post('/config', requireAuth, requireAdmin, (req: Request, res: Response) => {
-  const { sheetId, clientEmail, privateKey } = req.body;
+  const { sheetId, apiKey, clientEmail, privateKey } = req.body;
 
   updateSheetsConfig({
     sheetId,
+    apiKey,
     clientEmail,
     privateKey,
   });

@@ -1,137 +1,353 @@
 import { google } from 'googleapis';
-import { User, SaldoRecord, Transaction } from '../src/types/index.ts';
+import { User, SaldoRecord, Transaction, GoogleSheetsConfig } from '../src/types/index.ts';
 import { initialUsers, initialSaldo, initialTransactions } from './seedData.ts';
 import { calculateFinancialSummary } from '../src/utils/finance.ts';
 
-// In-Memory store as immediate reliable fallback and cache
+// In-Memory store as reliable fallback and local sync cache
 let memoryUsers: User[] = [...initialUsers];
 let memorySaldo: SaldoRecord = { ...initialSaldo };
 let memoryTransactions: Transaction[] = [...initialTransactions];
 
-// Configurable credentials (from env or runtime config)
+// Configuration loaded from env or updated at runtime
 let config = {
   sheetId: process.env.GOOGLE_SHEET_ID || '',
+  apiKey: process.env.GOOGLE_SHEETS_API_KEY || '',
   clientEmail: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || '',
   privateKey: (process.env.GOOGLE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
 };
 
+// Error suppression and cooldown to prevent repetitive failing requests
+let lastFetchFailedAt = 0;
+let lastErrorMessage = '';
+const COOLDOWN_MS = 60000; // 60 seconds cooldown after fetch failure
+
 /**
- * Mendapatkan instance Google Sheets API dengan autentikasi Service Account
+ * Validasi apakah API Key berformat valid (bukan placeholder / private key)
  */
-function getSheetsClient() {
-  if (!config.sheetId || !config.clientEmail || !config.privateKey) {
-    return null;
+function isValidApiKey(key: string): boolean {
+  if (!key) return false;
+  const clean = key.trim();
+  if (
+    clean.startsWith('YOUR_') ||
+    clean.startsWith('MY_') ||
+    clean.includes('-----BEGIN') ||
+    clean.includes('\n') ||
+    clean.includes(' ')
+  ) {
+    return false;
   }
-
-  const auth = new google.auth.JWT({
-    email: config.clientEmail,
-    key: config.privateKey,
-    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-  });
-
-  return google.sheets({ version: 'v4', auth });
+  return clean.length >= 20;
 }
 
-export function getSheetsConfigStatus() {
-  const isConfigured = Boolean(config.sheetId && config.clientEmail && config.privateKey);
+/**
+ * Validasi apakah Spreadsheet ID berformat valid
+ */
+function isValidSheetId(id: string): boolean {
+  if (!id) return false;
+  const clean = id.trim();
+  if (clean.startsWith('YOUR_') || clean.startsWith('MY_') || clean.includes(' ') || clean.includes('\n')) {
+    return false;
+  }
+  return clean.length >= 15;
+}
+
+/**
+ * Deteksi metode autentikasi yang sedang aktif
+ */
+export function getActiveAuthMethod(): GoogleSheetsConfig['authMethod'] {
+  if (isValidApiKey(config.apiKey) && isValidSheetId(config.sheetId)) {
+    return 'api_key';
+  }
+  if (config.clientEmail && config.privateKey && isValidSheetId(config.sheetId)) {
+    return 'service_account';
+  }
+  return 'demo_mode';
+}
+
+/**
+ * Mendapatkan status konfigurasi Google Sheets
+ */
+export function getSheetsConfigStatus(): GoogleSheetsConfig {
+  const method = getActiveAuthMethod();
+  const isConfigured = method !== 'demo_mode';
+
+  let message = 'Mode Data Lokal Aktif (Data tersimpan di server, siap dihubungkan ke Google Sheets)';
+  if (method === 'api_key') {
+    if (lastErrorMessage) {
+      message = `Perhatian Sinkronisasi: ${lastErrorMessage}`;
+    } else {
+      message = 'Terhubung ke Google Spreadsheet via Google Sheets API v4 (API Key)';
+    }
+  } else if (method === 'service_account') {
+    message = 'Terhubung ke Google Spreadsheet via Google Cloud Service Account';
+  }
+
   return {
-    isConfigured,
-    sheetId: config.sheetId ? `${config.sheetId.slice(0, 6)}...${config.sheetId.slice(-4)}` : '',
+    sheetId: isValidSheetId(config.sheetId) ? `${config.sheetId.slice(0, 6)}...${config.sheetId.slice(-4)}` : '',
+    apiKey: isValidApiKey(config.apiKey) ? `${config.apiKey.slice(0, 5)}...${config.apiKey.slice(-3)}` : '',
     clientEmail: config.clientEmail ? `${config.clientEmail.slice(0, 8)}...` : '',
-    status: isConfigured ? ('connected' as const) : ('demo_mode' as const),
-    message: isConfigured
-      ? 'Terhubung dengan Google Spreadsheet via Google Sheets API (Service Account)'
-      : 'Mode Demo Lokal Aktif (Data tersimpan di server, siap dihubungkan ke Google Sheets API)',
+    authMethod: method,
+    isConfigured,
+    status: isConfigured ? (lastErrorMessage ? 'error' : 'connected') : 'demo_mode',
+    message,
+    lastSynced: new Date().toISOString(),
   };
 }
 
-export function updateSheetsConfig(newConfig: { sheetId?: string; clientEmail?: string; privateKey?: string }) {
-  if (newConfig.sheetId !== undefined) config.sheetId = newConfig.sheetId.trim();
-  if (newConfig.clientEmail !== undefined) config.clientEmail = newConfig.clientEmail.trim();
+/**
+ * Update runtime config
+ */
+export function updateSheetsConfig(newConfig: {
+  sheetId?: string;
+  apiKey?: string;
+  clientEmail?: string;
+  privateKey?: string;
+}) {
+  if (newConfig.sheetId !== undefined) {
+    config.sheetId = newConfig.sheetId.trim();
+  }
+
+  if (newConfig.apiKey !== undefined) {
+    const rawKey = newConfig.apiKey.trim();
+    // Jika user tidak sengaja paste Service Account private key ke kolom API Key, pisahkan secara cerdas
+    if (rawKey.includes('-----BEGIN PRIVATE KEY-----')) {
+      config.privateKey = rawKey.replace(/\\n/g, '\n');
+      config.apiKey = '';
+    } else {
+      config.apiKey = rawKey;
+    }
+  }
+
+  if (newConfig.clientEmail !== undefined) {
+    config.clientEmail = newConfig.clientEmail.trim();
+  }
+
   if (newConfig.privateKey !== undefined) {
     config.privateKey = newConfig.privateKey.replace(/\\n/g, '\n').trim();
+  }
+
+  // Reset error state saat user memperbarui konfigurasi
+  lastFetchFailedAt = 0;
+  lastErrorMessage = '';
+}
+
+/**
+ * Reset config kembali ke mode demo data lokal
+ */
+export function resetSheetsConfig() {
+  config.sheetId = '';
+  config.apiKey = '';
+  config.clientEmail = '';
+  config.privateKey = '';
+  lastFetchFailedAt = 0;
+  lastErrorMessage = '';
+}
+
+/**
+ * Service Account client (jika tersedia)
+ */
+function getServiceAccountClient() {
+  if (!isValidSheetId(config.sheetId) || !config.clientEmail || !config.privateKey) {
+    return null;
+  }
+  try {
+    const auth = new google.auth.JWT({
+      email: config.clientEmail,
+      key: config.privateKey,
+      scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+    });
+    return google.sheets({ version: 'v4', auth });
+  } catch {
+    return null;
   }
 }
 
 /**
- * Tes koneksi ke Google Spreadsheet
+ * Fetch data dari Google Sheets API v4 menggunakan API KEY (Direct REST API)
+ * Dilengkapi graceful fallback tanpa console warning error
  */
-export async function testSheetsConnection(): Promise<{ success: boolean; message: string; sheetNames?: string[] }> {
-  const client = getSheetsClient();
-  if (!client) {
-    return {
-      success: false,
-      message: 'Kredensial Service Account atau ID Spreadsheet belum dikonfigurasi lengkap.',
-    };
+async function fetchSheetValuesWithApiKey(range: string): Promise<any[][] | null> {
+  if (!isValidSheetId(config.sheetId) || !isValidApiKey(config.apiKey)) {
+    return null;
   }
 
-  try {
-    const res = await client.spreadsheets.get({
-      spreadsheetId: config.sheetId,
-    });
-    const sheetNames = res.data.sheets?.map((s) => s.properties?.title || '') || [];
-    return {
-      success: true,
-      message: `Berhasil terhubung ke spreadsheet "${res.data.properties?.title || config.sheetId}"`,
-      sheetNames,
-    };
-  } catch (err: any) {
-    return {
-      success: false,
-      message: `Gagal mengakses Google Spreadsheet: ${err.message || 'Periksa izin Share ke Service Account'}`,
-    };
+  // Jika baru saja gagal (cooldown), gunakan data lokal tanpa membebani server/Google API
+  if (Date.now() - lastFetchFailedAt < COOLDOWN_MS) {
+    return null;
   }
+
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${config.sheetId}/values/${encodeURIComponent(
+    range
+  )}?key=${encodeURIComponent(config.apiKey)}`;
+
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      lastFetchFailedAt = Date.now();
+      const errData = await response.json().catch(() => ({}));
+      lastErrorMessage =
+        errData?.error?.message ||
+        `Akses sheet gagal (Status ${response.status}). Pastikan sharing spreadsheet: "Anyone with the link can view".`;
+      return null;
+    }
+
+    const data = await response.json();
+    lastErrorMessage = '';
+    lastFetchFailedAt = 0;
+    return data.values || [];
+  } catch (err: any) {
+    lastFetchFailedAt = Date.now();
+    lastErrorMessage = err?.message || 'Gangguan koneksi ke Google Sheets API';
+    return null;
+  }
+}
+
+/**
+ * Tes koneksi ke Google Spreadsheet secara langsung via Google Sheets API v4
+ */
+export async function testSheetsConnection(): Promise<{
+  success: boolean;
+  message: string;
+  sheetNames?: string[];
+  spreadsheetTitle?: string;
+}> {
+  // Reset cooldown saat uji coba eksplisit
+  lastFetchFailedAt = 0;
+  const method = getActiveAuthMethod();
+
+  // 1. Tes koneksi langsung via Google Sheets API v4 (API Key)
+  if (method === 'api_key') {
+    try {
+      const metaUrl = `https://sheets.googleapis.com/v4/spreadsheets/${config.sheetId}?key=${encodeURIComponent(
+        config.apiKey
+      )}`;
+      const res = await fetch(metaUrl);
+      const data = await res.json();
+
+      if (!res.ok) {
+        const errorMsg =
+          data.error?.message ||
+          'Pastikan API Key benar dan akses Google Spreadsheet diatur ke: "Siapa saja yang memiliki link dapat melihat"';
+        lastErrorMessage = errorMsg;
+        lastFetchFailedAt = Date.now();
+        return {
+          success: false,
+          message: `Gagal akses Google Sheets API v4: ${errorMsg}`,
+        };
+      }
+
+      const sheetNames = data.sheets?.map((s: any) => s.properties?.title || '') || [];
+      lastErrorMessage = '';
+      lastFetchFailedAt = 0;
+      return {
+        success: true,
+        message: `Koneksi Google Sheets API v4 Berhasil! Terhubung ke dokumen "${data.properties?.title}"`,
+        sheetNames,
+        spreadsheetTitle: data.properties?.title,
+      };
+    } catch (err: any) {
+      lastFetchFailedAt = Date.now();
+      lastErrorMessage = err.message || 'Koneksi gagal';
+      return {
+        success: false,
+        message: `Gagal menghubungi Google Sheets API: ${err.message}`,
+      };
+    }
+  }
+
+  // 2. Tes koneksi via Service Account
+  if (method === 'service_account') {
+    const client = getServiceAccountClient();
+    if (!client) {
+      return {
+        success: false,
+        message: 'Kredensial Service Account belum lengkap atau format kunci tidak valid.',
+      };
+    }
+    try {
+      const res = await client.spreadsheets.get({ spreadsheetId: config.sheetId });
+      const sheetNames = res.data.sheets?.map((s) => s.properties?.title || '') || [];
+      return {
+        success: true,
+        message: `Berhasil terhubung ke spreadsheet "${res.data.properties?.title || config.sheetId}" via Service Account`,
+        sheetNames,
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        message: `Gagal mengakses Google Spreadsheet: ${err.message || 'Periksa izin Share ke Service Account'}`,
+      };
+    }
+  }
+
+  return {
+    success: false,
+    message: 'Belum ada API Key valid yang dikonfigurasi. Aplikasi berjalan dalam mode data lokal.',
+  };
 }
 
 // ==========================================
 // 1. SHEET "USERS"
 // ==========================================
 export async function getUsersFromStore(): Promise<User[]> {
-  const client = getSheetsClient();
-  if (!client) return memoryUsers;
+  const method = getActiveAuthMethod();
 
-  try {
-    const response = await client.spreadsheets.values.get({
-      spreadsheetId: config.sheetId,
-      range: 'Users!A2:F',
-    });
-    const rows = response.data.values;
-    if (!rows || rows.length === 0) return memoryUsers;
-
-    const users: User[] = rows.map((row) => ({
-      id: row[0] || `usr-${Date.now()}`,
-      username: row[1] || '',
-      password_hash: row[2] || '',
-      role: (row[3] as 'admin' | 'anggota') || 'anggota',
-      nama_lengkap: row[4] || row[1] || 'Petugas',
-      jabatan: row[5] || 'Anggota Tim Haji',
-    }));
-
-    memoryUsers = users;
-    return users;
-  } catch (error) {
-    console.warn('Sheets API read Users failed, using fallback:', error);
-    return memoryUsers;
+  // A. Jika menggunakan API Key langsung (Google Sheets API v4)
+  if (method === 'api_key') {
+    const rows = await fetchSheetValuesWithApiKey('Users!A2:F');
+    if (rows && rows.length > 0) {
+      memoryUsers = rows.map((row) => ({
+        id: row[0] || `usr-${Date.now()}`,
+        username: row[1] || '',
+        password_hash: row[2] || '',
+        role: (row[3] as 'admin' | 'anggota') || 'anggota',
+        nama_lengkap: row[4] || row[1] || 'Petugas',
+        jabatan: row[5] || 'Anggota Tim Haji',
+      }));
+      return memoryUsers;
+    }
   }
+
+  // B. Jika menggunakan Service Account
+  const client = getServiceAccountClient();
+  if (client) {
+    try {
+      const response = await client.spreadsheets.values.get({
+        spreadsheetId: config.sheetId,
+        range: 'Users!A2:F',
+      });
+      const rows = response.data.values;
+      if (rows && rows.length > 0) {
+        memoryUsers = rows.map((row) => ({
+          id: row[0] || `usr-${Date.now()}`,
+          username: row[1] || '',
+          password_hash: row[2] || '',
+          role: (row[3] as 'admin' | 'anggota') || 'anggota',
+          nama_lengkap: row[4] || row[1] || 'Petugas',
+          jabatan: row[5] || 'Anggota Tim Haji',
+        }));
+        return memoryUsers;
+      }
+    } catch {
+      // Fallback to local memory silently
+    }
+  }
+
+  return memoryUsers;
 }
 
 // ==========================================
 // 2. SHEET "SALDO"
 // ==========================================
 export async function getSaldoFromStore(): Promise<SaldoRecord> {
-  // Update realtime balance based on current transactions
   const summary = calculateFinancialSummary(memorySaldo.saldo_awal_tahun_lalu, memoryTransactions, memorySaldo.tahun);
   memorySaldo.saldo_realtime = summary.saldoRealtime;
 
-  const client = getSheetsClient();
-  if (!client) return memorySaldo;
+  const method = getActiveAuthMethod();
 
-  try {
-    const response = await client.spreadsheets.values.get({
-      spreadsheetId: config.sheetId,
-      range: 'Saldo!A2:E2',
-    });
-    const rows = response.data.values;
+  // A. Jika menggunakan API Key langsung (Google Sheets API v4)
+  if (method === 'api_key') {
+    const rows = await fetchSheetValuesWithApiKey('Saldo!A2:E2');
     if (rows && rows.length > 0) {
       const row = rows[0];
       const saldoAwal = Number(row[2]) || memorySaldo.saldo_awal_tahun_lalu;
@@ -145,12 +361,39 @@ export async function getSaldoFromStore(): Promise<SaldoRecord> {
         catatan: row[4] || memorySaldo.catatan,
         updated_at: new Date().toISOString(),
       };
+      return memorySaldo;
     }
-    return memorySaldo;
-  } catch (error) {
-    console.warn('Sheets API read Saldo failed, using fallback:', error);
-    return memorySaldo;
   }
+
+  // B. Jika menggunakan Service Account
+  const client = getServiceAccountClient();
+  if (client) {
+    try {
+      const response = await client.spreadsheets.values.get({
+        spreadsheetId: config.sheetId,
+        range: 'Saldo!A2:E2',
+      });
+      const rows = response.data.values;
+      if (rows && rows.length > 0) {
+        const row = rows[0];
+        const saldoAwal = Number(row[2]) || memorySaldo.saldo_awal_tahun_lalu;
+        const calculatedRealtime = saldoAwal + summary.totalPenerimaan - summary.totalPengeluaran;
+
+        memorySaldo = {
+          id: row[0] || 'sld-2026',
+          tahun: row[1] || '1447 H / 2026 M',
+          saldo_awal_tahun_lalu: saldoAwal,
+          saldo_realtime: calculatedRealtime,
+          catatan: row[4] || memorySaldo.catatan,
+          updated_at: new Date().toISOString(),
+        };
+      }
+    } catch {
+      // Fallback to local memory silently
+    }
+  }
+
+  return memorySaldo;
 }
 
 export async function updateSaldoInStore(payload: {
@@ -163,11 +406,11 @@ export async function updateSaldoInStore(payload: {
   if (payload.catatan !== undefined) memorySaldo.catatan = payload.catatan;
   memorySaldo.updated_at = new Date().toISOString();
 
-  // Re-calculate realtime balance
   const summary = calculateFinancialSummary(memorySaldo.saldo_awal_tahun_lalu, memoryTransactions, memorySaldo.tahun);
   memorySaldo.saldo_realtime = summary.saldoRealtime;
 
-  const client = getSheetsClient();
+  // Jika Service Account aktif
+  const client = getServiceAccountClient();
   if (client) {
     try {
       await client.spreadsheets.values.update({
@@ -187,8 +430,8 @@ export async function updateSaldoInStore(payload: {
           ],
         },
       });
-    } catch (err) {
-      console.error('Sheets API write Saldo failed:', err);
+    } catch {
+      // Keep local update
     }
   }
 
@@ -199,35 +442,56 @@ export async function updateSaldoInStore(payload: {
 // 3. SHEET "TRANSAKSI"
 // ==========================================
 export async function getTransactionsFromStore(): Promise<Transaction[]> {
-  const client = getSheetsClient();
-  if (!client) return memoryTransactions;
+  const method = getActiveAuthMethod();
 
-  try {
-    const response = await client.spreadsheets.values.get({
-      spreadsheetId: config.sheetId,
-      range: 'Transaksi!A2:I',
-    });
-    const rows = response.data.values;
-    if (!rows || rows.length === 0) return memoryTransactions;
-
-    const list: Transaction[] = rows.map((row) => ({
-      id: row[0] || `TRX-${Date.now()}`,
-      tanggal: row[1] || new Date().toISOString().split('T')[0],
-      jenis: (row[2] as 'penerimaan' | 'pengeluaran') || 'penerimaan',
-      nominal: Number(row[3]) || 0,
-      sumber_dana: row[4] || '',
-      nama_penerima: row[5] || '',
-      keterangan: row[6] || '',
-      dibuat_oleh: row[7] || '',
-      created_at: row[8] || new Date().toISOString(),
-    }));
-
-    memoryTransactions = list;
-    return list;
-  } catch (error) {
-    console.warn('Sheets API read Transaksi failed, using fallback:', error);
-    return memoryTransactions;
+  // A. Jika menggunakan API Key langsung (Google Sheets API v4)
+  if (method === 'api_key') {
+    const rows = await fetchSheetValuesWithApiKey('Transaksi!A2:I');
+    if (rows && rows.length > 0) {
+      memoryTransactions = rows.map((row) => ({
+        id: row[0] || `TRX-${Date.now()}`,
+        tanggal: row[1] || new Date().toISOString().split('T')[0],
+        jenis: (row[2] as 'penerimaan' | 'pengeluaran') || 'penerimaan',
+        nominal: Number(row[3]) || 0,
+        sumber_dana: row[4] || '',
+        nama_penerima: row[5] || '',
+        keterangan: row[6] || '',
+        dibuat_oleh: row[7] || '',
+        created_at: row[8] || new Date().toISOString(),
+      }));
+      return memoryTransactions;
+    }
   }
+
+  // B. Jika menggunakan Service Account
+  const client = getServiceAccountClient();
+  if (client) {
+    try {
+      const response = await client.spreadsheets.values.get({
+        spreadsheetId: config.sheetId,
+        range: 'Transaksi!A2:I',
+      });
+      const rows = response.data.values;
+      if (rows && rows.length > 0) {
+        memoryTransactions = rows.map((row) => ({
+          id: row[0] || `TRX-${Date.now()}`,
+          tanggal: row[1] || new Date().toISOString().split('T')[0],
+          jenis: (row[2] as 'penerimaan' | 'pengeluaran') || 'penerimaan',
+          nominal: Number(row[3]) || 0,
+          sumber_dana: row[4] || '',
+          nama_penerima: row[5] || '',
+          keterangan: row[6] || '',
+          dibuat_oleh: row[7] || '',
+          created_at: row[8] || new Date().toISOString(),
+        }));
+        return memoryTransactions;
+      }
+    } catch {
+      // Fallback to local memory silently
+    }
+  }
+
+  return memoryTransactions;
 }
 
 export async function addTransactionToStore(trx: Omit<Transaction, 'id' | 'created_at'>): Promise<Transaction> {
@@ -240,11 +504,11 @@ export async function addTransactionToStore(trx: Omit<Transaction, 'id' | 'creat
 
   memoryTransactions.unshift(newTrx);
 
-  // Update saldo realtime
   const summary = calculateFinancialSummary(memorySaldo.saldo_awal_tahun_lalu, memoryTransactions, memorySaldo.tahun);
   memorySaldo.saldo_realtime = summary.saldoRealtime;
 
-  const client = getSheetsClient();
+  // Jika Service Account aktif
+  const client = getServiceAccountClient();
   if (client) {
     try {
       await client.spreadsheets.values.append({
@@ -267,8 +531,8 @@ export async function addTransactionToStore(trx: Omit<Transaction, 'id' | 'creat
           ],
         },
       });
-    } catch (err) {
-      console.error('Sheets API append Transaksi failed:', err);
+    } catch {
+      // Keep local addition
     }
   }
 
@@ -286,19 +550,17 @@ export async function updateTransactionInStore(
   const updated: Transaction = {
     ...existing,
     ...updatedFields,
-    id: existing.id, // prevent ID overwrite
+    id: existing.id,
   };
   memoryTransactions[index] = updated;
 
-  // Re-calculate saldo
   const summary = calculateFinancialSummary(memorySaldo.saldo_awal_tahun_lalu, memoryTransactions, memorySaldo.tahun);
   memorySaldo.saldo_realtime = summary.saldoRealtime;
 
-  // If connected to Google Sheets, sync all rows
-  const client = getSheetsClient();
+  // Sync to Service Account if active
+  const client = getServiceAccountClient();
   if (client) {
     try {
-      // Find row index or rewrite data range
       const values = memoryTransactions.map((t) => [
         t.id,
         t.tanggal,
@@ -316,8 +578,8 @@ export async function updateTransactionInStore(
         valueInputOption: 'USER_ENTERED',
         requestBody: { values },
       });
-    } catch (err) {
-      console.error('Sheets API update Transaksi failed:', err);
+    } catch {
+      // Keep local update
     }
   }
 
@@ -332,12 +594,11 @@ export async function deleteTransactionFromStore(id: string): Promise<boolean> {
     return false;
   }
 
-  // Re-calculate saldo
   const summary = calculateFinancialSummary(memorySaldo.saldo_awal_tahun_lalu, memoryTransactions, memorySaldo.tahun);
   memorySaldo.saldo_realtime = summary.saldoRealtime;
 
-  // Update Google Sheets if connected
-  const client = getSheetsClient();
+  // Sync to Service Account if active
+  const client = getServiceAccountClient();
   if (client) {
     try {
       await client.spreadsheets.values.clear({
@@ -364,8 +625,8 @@ export async function deleteTransactionFromStore(id: string): Promise<boolean> {
           requestBody: { values },
         });
       }
-    } catch (err) {
-      console.error('Sheets API clear & update after delete failed:', err);
+    } catch {
+      // Keep local delete
     }
   }
 

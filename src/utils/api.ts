@@ -136,7 +136,12 @@ export const api = {
     return res.data!;
   },
 
-  async updateSheetsConfig(data: { sheetId: string; clientEmail: string; privateKey: string }): Promise<GoogleSheetsConfig> {
+  async updateSheetsConfig(data: {
+    sheetId?: string;
+    apiKey?: string;
+    clientEmail?: string;
+    privateKey?: string;
+  }): Promise<GoogleSheetsConfig> {
     const res = await request<ApiResponse<GoogleSheetsConfig>>('/api/sheets/config', {
       method: 'POST',
       body: JSON.stringify(data),

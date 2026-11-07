@@ -44,8 +44,9 @@ export interface FinancialSummary {
 
 export interface GoogleSheetsConfig {
   sheetId: string;
-  clientEmail: string;
-  privateKey: string;
+  apiKey?: string;
+  clientEmail?: string;
+  authMethod: 'api_key' | 'service_account' | 'demo_mode';
   isConfigured: boolean;
   status: 'connected' | 'demo_mode' | 'error';
   lastSynced?: string;
