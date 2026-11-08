@@ -3,6 +3,7 @@ import { Transaction, SaldoRecord, AuthUser } from '../types/index.ts';
 import { formatRupiah, formatTanggalIndo } from '../utils/finance.ts';
 import { StatCards } from '../components/StatCard.tsx';
 import { Kabah4DScene } from '../components/Kabah4DScene.tsx';
+import { BudgetTrackerCard } from '../components/BudgetTrackerCard.tsx';
 import {
   ArrowDownLeft,
   ArrowUpRight,
@@ -147,6 +148,9 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           </div>
         </button>
       </div>
+
+      {/* Pelacak Plafon Anggaran (Budget Tracking Progress) */}
+      <BudgetTrackerCard transactions={transactions} isAdmin={isAdmin} />
 
       {/* Arus Kas & Analisis Visual */}
       <div className="rounded-2xl p-4 bg-white/5 backdrop-blur-md border border-white/10 shadow-xl space-y-3">

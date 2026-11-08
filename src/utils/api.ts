@@ -6,6 +6,7 @@ import {
   Transaction,
   GoogleSheetsConfig,
   SheetsTestResult,
+  SheetsBootstrapResult,
 } from '../types/index.ts';
 
 const TOKEN_KEY = 'haji_finance_auth_token';
@@ -151,6 +152,13 @@ export const api = {
 
   async resetSheetsConfig(): Promise<GoogleSheetsConfig> {
     const res = await request<ApiResponse<GoogleSheetsConfig>>('/api/sheets/reset', {
+      method: 'POST',
+    });
+    return res.data!;
+  },
+
+  async bootstrapSheets(): Promise<SheetsBootstrapResult> {
+    const res = await request<ApiResponse<SheetsBootstrapResult>>('/api/sheets/bootstrap', {
       method: 'POST',
     });
     return res.data!;

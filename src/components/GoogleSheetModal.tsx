@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { GoogleSheetsConfig, SheetsTestResult } from '../types/index.ts';
+import { GoogleSheetsConfig, SheetsTestResult, SheetsBootstrapResult } from '../types/index.ts';
 import { api } from '../utils/api.ts';
 import {
   X,
@@ -17,6 +17,9 @@ import {
   RotateCcw,
   HelpCircle,
   Info,
+  Wand2,
+  Sparkles,
+  Download,
 } from 'lucide-react';
 
 interface GoogleSheetModalProps {
@@ -42,11 +45,13 @@ export const GoogleSheetModal: React.FC<GoogleSheetModalProps> = ({
   const [privateKey, setPrivateKey] = useState<string>('');
 
   const [testResult, setTestResult] = useState<SheetsTestResult | null>(null);
+  const [bootstrapResult, setBootstrapResult] = useState<SheetsBootstrapResult | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [confirmReset, setConfirmReset] = useState<boolean>(false);
   const [isTesting, setIsTesting] = useState<boolean>(false);
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [isResetting, setIsResetting] = useState<boolean>(false);
+  const [isBootstrapping, setIsBootstrapping] = useState<boolean>(false);
   const [copiedText, setCopiedText] = useState<string | null>(null);
 
   // Sync state saat modal dibuka
@@ -180,6 +185,51 @@ export const GoogleSheetModal: React.FC<GoogleSheetModalProps> = ({
     }
   };
 
+  const handleBootstrapSheets = async () => {
+    setIsBootstrapping(true);
+    setBootstrapResult(null);
+    setFormError(null);
+    try {
+      const res = await api.bootstrapSheets();
+      setBootstrapResult(res);
+      if (res.success) {
+        onConfigUpdated();
+        await handleTestConnection();
+      }
+    } catch (err: any) {
+      setBootstrapResult({
+        success: false,
+        message: err.message || 'Gagal menginisialisasi lembar kerja otomatis',
+        createdSheets: [],
+        alreadyExisted: [],
+        initializedHeaders: [],
+        method: config?.authMethod || 'service_account',
+      });
+    } finally {
+      setIsBootstrapping(false);
+    }
+  };
+
+  const handleDownloadCsv = (sheetName: 'Users' | 'Saldo' | 'Transaksi') => {
+    let content = '';
+    if (sheetName === 'Users') {
+      content = 'id,username,password_hash,role,nama_lengkap,jabatan\r\nusr-1,admin,admin123,admin,"dr. H. Rahmat Hidayat, M.Kes","Ketua Tim Haji"\r\nusr-2,petugas,petugas123,anggota,"Ns. Hj. Siti Nurjanah, S.Kep","Paramedis Kloter"';
+    } else if (sheetName === 'Saldo') {
+      content = 'id,tahun,saldo_awal_tahun_lalu,saldo_realtime,catatan,updated_at\r\nsld-2026,1447 H / 2026 M,12500000,28200000,"Sisa kas operasional tahun lalu",2026-05-01T00:00:00.000Z';
+    } else if (sheetName === 'Transaksi') {
+      content = 'id,tanggal,jenis,nominal,sumber_dana,nama_penerima,keterangan,dibuat_oleh,created_at\r\nTRX-2026-001,2026-04-10,penerimaan,15000000,"Dana Operasional Dinkes",,"Pencairan Tahap 1 BOK Haji","Admin Petugas Haji",2026-04-10T08:00:00.000Z\r\nTRX-2026-002,2026-04-18,pengeluaran,4200000,,"PT Kimia Farma Apotek","Pengadaan Obat Emergensi & Vitamin","Admin Petugas Haji",2026-04-18T10:30:00.000Z';
+    }
+    const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `${sheetName}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   // Evaluasi status kartu
   const hasError = config?.status === 'error' || (testResult && !testResult.success);
   const isConnected = config?.status === 'connected' && (!testResult || testResult.success);
@@ -276,7 +326,7 @@ export const GoogleSheetModal: React.FC<GoogleSheetModalProps> = ({
               {/* STATUS CARD */}
               {hasError ? (
                 /* ERROR CARD */
-                <div className="p-4 rounded-2xl border bg-rose-950/40 border-rose-500/40 text-rose-200 space-y-2.5">
+                <div className="p-4 rounded-2xl border bg-rose-950/40 border-rose-500/40 text-rose-200 space-y-3">
                   <div className="flex items-start gap-3">
                     <XCircle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
                     <div className="space-y-1 flex-1">
@@ -292,23 +342,81 @@ export const GoogleSheetModal: React.FC<GoogleSheetModalProps> = ({
                     </div>
                   </div>
 
-                  {/* Langkah Solusi / Saran */}
-                  {(testResult?.suggestions || config?.suggestions) && (
-                    <div className="mt-2 pt-2.5 border-t border-rose-500/25 bg-black/20 p-2.5 rounded-xl">
-                      <div className="font-semibold text-rose-300 text-[11px] flex items-center gap-1.5 mb-1.5">
-                        <Info className="w-3.5 h-3.5 text-rose-300" />
-                        <span>Langkah Perbaikan yang Disarankan:</span>
+                  {/* Khusus PERMISSION_DENIED: Panduan Interaktif & Solusi Cepat */}
+                  {(testResult?.errorType === 'PERMISSION_DENIED' || config?.errorType === 'PERMISSION_DENIED') && (
+                    <div className="p-3 rounded-xl bg-black/40 border border-amber-500/30 text-amber-200 text-[11px] space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <div className="font-bold text-amber-300 flex items-center gap-1.5">
+                          <AlertTriangle className="w-4 h-4 text-amber-400" />
+                          <span>Solusi Mengatasi Akses Ditolak (PERMISSION_DENIED):</span>
+                        </div>
+                        {sheetInput.trim() && (
+                          <a
+                            href={
+                              sheetInput.startsWith('http')
+                                ? sheetInput
+                                : `https://docs.google.com/spreadsheets/d/${extractCleanSheetId(sheetInput)}/edit`
+                            }
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-pink-600 hover:bg-pink-500 text-white font-bold text-[10px] transition-all"
+                          >
+                            <span>Buka Dokumen</span>
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                        )}
                       </div>
-                      <ul className="list-disc pl-4 space-y-1 text-[11px] text-rose-200/90 leading-relaxed">
-                        {(testResult?.suggestions || config?.suggestions || []).map((sug, idx) => (
-                          <li key={idx}>{sug}</li>
-                        ))}
-                      </ul>
+
+                      <div className="p-2.5 rounded-lg bg-white/5 border border-white/10 space-y-1.5 text-slate-200">
+                        <p className="font-semibold text-pink-300">
+                          Mengapa Google API Menolak Akses Ini?
+                        </p>
+                        <p className="text-slate-300 leading-relaxed text-[10px]">
+                          Google Cloud API Key adalah kunci tanpa identitas login pengguna. Google Sheets API secara ketat <b>hanya mengizinkan API Key membaca spreadsheet yang akses umumnya telah dibuka</b>. Jika dokumen masih berstatus <b>"Dibatasi" (Restricted)</b>, Google Cloud akan selalu menolaknya.
+                        </p>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <span className="font-semibold text-amber-300 block text-[11px]">
+                          4 Langkah Mengaktifkan Akses dalam 10 Detik:
+                        </span>
+                        <ol className="list-decimal pl-4 space-y-1 text-slate-200 text-[10px] leading-relaxed">
+                          <li>Buka file Google Spreadsheet Anda di browser.</li>
+                          <li>
+                            Klik tombol biru <b>"Bagikan" (Share)</b> di pojok kanan atas layar spreadsheet.
+                          </li>
+                          <li>
+                            Pada bagian <b>"Akses umum" (General access)</b>, ubah dari <i>"Dibatasi"</i> menjadi{' '}
+                            <b className="text-emerald-300">"Siapa saja yang memiliki link" (Anyone with the link)</b> dengan peran <b>Pelihat (Viewer)</b>.
+                          </li>
+                          <li>
+                            Klik <b>"Selesai"</b>, lalu kembali ke aplikasi ini dan klik tombol{' '}
+                            <b>"Tes Koneksi Sekarang"</b> di bawah.
+                          </li>
+                        </ol>
+                      </div>
                     </div>
                   )}
 
+                  {/* Langkah Solusi Umum */}
+                  {testResult?.errorType !== 'PERMISSION_DENIED' &&
+                    config?.errorType !== 'PERMISSION_DENIED' &&
+                    (testResult?.suggestions || config?.suggestions) && (
+                      <div className="mt-2 pt-2.5 border-t border-rose-500/25 bg-black/20 p-2.5 rounded-xl">
+                        <div className="font-semibold text-rose-300 text-[11px] flex items-center gap-1.5 mb-1.5">
+                          <Info className="w-3.5 h-3.5 text-rose-300" />
+                          <span>Langkah Perbaikan yang Disarankan:</span>
+                        </div>
+                        <ul className="list-disc pl-4 space-y-1 text-[11px] text-rose-200/90 leading-relaxed">
+                          {(testResult?.suggestions || config?.suggestions || []).map((sug, idx) => (
+                            <li key={idx}>{sug}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
                   {isAdmin && (
-                    <div className="flex items-center gap-2 pt-1">
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
                       <button
                         type="button"
                         onClick={() => setActiveTab('apiKey')}
@@ -321,7 +429,7 @@ export const GoogleSheetModal: React.FC<GoogleSheetModalProps> = ({
                         onClick={() => setActiveTab('serviceAccount')}
                         className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-slate-200 font-semibold text-[11px] transition-all cursor-pointer"
                       >
-                        Gunakan Service Account
+                        Gunakan Service Account (Untuk Dokumen Privat)
                       </button>
                     </div>
                   )}
@@ -423,6 +531,89 @@ export const GoogleSheetModal: React.FC<GoogleSheetModalProps> = ({
                 <span className="text-[10px] text-slate-400">
                   {config?.lastSynced ? `Sinkron: ${new Date(config.lastSynced).toLocaleTimeString('id-ID')}` : ''}
                 </span>
+              </div>
+
+              {/* FITUR INISIALISASI 3 SHEET & HEADER OTOMATIS */}
+              <div className="p-3.5 rounded-2xl bg-gradient-to-r from-purple-950/60 via-pink-950/40 to-purple-950/60 border border-pink-500/30 space-y-2.5">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-2 rounded-xl bg-pink-500/20 text-pink-300 border border-pink-500/30">
+                      <Wand2 className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
+                        <span>Inisialisasi 3 Sheet & Header Otomatis</span>
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-pink-500/20 text-pink-300 border border-pink-500/30 font-semibold">
+                          Tanpa Manual
+                        </span>
+                      </h4>
+                      <p className="text-[11px] text-purple-200/70 mt-0.5">
+                        Terapkan lembar <b>Users</b>, <b>Saldo</b>, & <b>Transaksi</b> langsung tanpa mengubah data yang ada
+                      </p>
+                    </div>
+                  </div>
+
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      onClick={handleBootstrapSheets}
+                      disabled={isBootstrapping}
+                      className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-pink-500 via-fuchsia-500 to-purple-600 hover:from-pink-600 hover:to-purple-700 text-white font-bold text-xs shadow-md transition-all flex items-center gap-1.5 self-start sm:self-auto disabled:opacity-50 cursor-pointer"
+                    >
+                      <Sparkles className={`w-3.5 h-3.5 ${isBootstrapping ? 'animate-spin' : ''}`} />
+                      <span>{isBootstrapping ? 'Menerapkan...' : 'Terapkan Otomatis'}</span>
+                    </button>
+                  )}
+                </div>
+
+                {bootstrapResult && (
+                  <div
+                    className={`p-2.5 rounded-xl text-[11px] flex items-start gap-2 ${
+                      bootstrapResult.success
+                        ? 'bg-emerald-500/20 border border-emerald-500/30 text-emerald-300'
+                        : 'bg-rose-500/20 border border-rose-500/30 text-rose-300'
+                    }`}
+                  >
+                    {bootstrapResult.success ? (
+                      <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0 text-emerald-400" />
+                    ) : (
+                      <XCircle className="w-4 h-4 mt-0.5 shrink-0 text-rose-400" />
+                    )}
+                    <div className="leading-relaxed flex-1">
+                      <p className="font-semibold">{bootstrapResult.message}</p>
+                      {bootstrapResult.method === 'api_key' && (
+                        <div className="mt-2 pt-2 border-t border-white/10 space-y-1.5">
+                          <p className="text-[10px] text-slate-300">
+                            Unduh file template CSV siap pakai (tinggal Import di Google Sheets):
+                          </p>
+                          <div className="flex flex-wrap gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => handleDownloadCsv('Users')}
+                              className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[10px] flex items-center gap-1"
+                            >
+                              <Download className="w-3 h-3" /> Unduh Users.csv
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDownloadCsv('Saldo')}
+                              className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[10px] flex items-center gap-1"
+                            >
+                              <Download className="w-3 h-3" /> Unduh Saldo.csv
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDownloadCsv('Transaksi')}
+                              className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[10px] flex items-center gap-1"
+                            >
+                              <Download className="w-3 h-3" /> Unduh Transaksi.csv
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* CHECKLIST 3 SHEET DOKUMEN */}
@@ -696,22 +887,71 @@ export const GoogleSheetModal: React.FC<GoogleSheetModalProps> = ({
           {/* TAB 4: SKEMA 3 SHEET */}
           {activeTab === 'schema' && (
             <div className="space-y-3">
-              <div className="p-2.5 rounded-xl bg-purple-950/30 border border-purple-500/20 text-[11px] text-purple-200">
-                Buat 3 lembar kerja (tabs) di spreadsheet dengan nama persis: <b>Users</b>, <b>Saldo</b>, dan <b>Transaksi</b>. Klik tombol <i>Salin Header</i> untuk menyalin nama kolom ke baris 1 (A1).
+              {/* Action Banner: Terapkan Otomatis */}
+              <div className="p-3 rounded-2xl bg-gradient-to-r from-purple-900/60 via-pink-900/40 to-purple-900/60 border border-pink-500/40 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                <div>
+                  <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-pink-400" />
+                    <span>Terapkan 3 Sheet & Header Otomatis</span>
+                  </h4>
+                  <p className="text-[10px] text-purple-200/80 mt-0.5">
+                    Buat lembar kerja baru tanpa mengubah data yang sudah ada di spreadsheet Anda.
+                  </p>
+                </div>
+
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={handleBootstrapSheets}
+                    disabled={isBootstrapping}
+                    className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-pink-500 to-purple-600 hover:from-pink-600 hover:to-purple-700 text-white font-bold text-xs shadow-md transition-all flex items-center gap-1.5 self-start sm:self-auto disabled:opacity-50 cursor-pointer"
+                  >
+                    <Wand2 className={`w-3.5 h-3.5 ${isBootstrapping ? 'animate-spin' : ''}`} />
+                    <span>{isBootstrapping ? 'Menerapkan...' : 'Terapkan Otomatis'}</span>
+                  </button>
+                )}
               </div>
+
+              {bootstrapResult && (
+                <div
+                  className={`p-2.5 rounded-xl text-[11px] flex items-start gap-2 ${
+                    bootstrapResult.success
+                      ? 'bg-emerald-500/20 border border-emerald-500/30 text-emerald-300'
+                      : 'bg-rose-500/20 border border-rose-500/30 text-rose-300'
+                  }`}
+                >
+                  {bootstrapResult.success ? (
+                    <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0 text-emerald-400" />
+                  ) : (
+                    <XCircle className="w-4 h-4 mt-0.5 shrink-0 text-rose-400" />
+                  )}
+                  <span className="leading-relaxed font-semibold">{bootstrapResult.message}</span>
+                </div>
+              )}
 
               {/* Sheet Users */}
               <div className="p-3 rounded-2xl bg-white/5 border border-white/10 space-y-1.5">
                 <div className="flex items-center justify-between">
                   <span className="font-bold text-emerald-300">1. Sheet "Users"</span>
-                  <button
-                    type="button"
-                    onClick={() => handleCopy('id,username,password_hash,role,nama_lengkap,jabatan', 'users')}
-                    className="flex items-center gap-1 text-[11px] text-purple-300 hover:text-white cursor-pointer"
-                  >
-                    {copiedText === 'users' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                    <span>Salin Header</span>
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleDownloadCsv('Users')}
+                      className="flex items-center gap-1 text-[10px] text-pink-300 hover:text-white px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 cursor-pointer transition-colors"
+                      title="Unduh file CSV siap import ke Google Sheets"
+                    >
+                      <Download className="w-3 h-3" />
+                      <span>Unduh CSV</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleCopy('id,username,password_hash,role,nama_lengkap,jabatan', 'users')}
+                      className="flex items-center gap-1 text-[11px] text-purple-300 hover:text-white cursor-pointer"
+                    >
+                      {copiedText === 'users' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                      <span>Salin Header</span>
+                    </button>
+                  </div>
                 </div>
                 <p className="text-[11px] text-slate-300">
                   Kolom: <code>id, username, password_hash, role, nama_lengkap, jabatan</code>
@@ -726,14 +966,25 @@ export const GoogleSheetModal: React.FC<GoogleSheetModalProps> = ({
               <div className="p-3 rounded-2xl bg-white/5 border border-white/10 space-y-1.5">
                 <div className="flex items-center justify-between">
                   <span className="font-bold text-purple-300">2. Sheet "Saldo"</span>
-                  <button
-                    type="button"
-                    onClick={() => handleCopy('id,tahun,saldo_awal_tahun_lalu,saldo_realtime,catatan,updated_at', 'saldo')}
-                    className="flex items-center gap-1 text-[11px] text-purple-300 hover:text-white cursor-pointer"
-                  >
-                    {copiedText === 'saldo' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                    <span>Salin Header</span>
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleDownloadCsv('Saldo')}
+                      className="flex items-center gap-1 text-[10px] text-pink-300 hover:text-white px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 cursor-pointer transition-colors"
+                      title="Unduh file CSV siap import ke Google Sheets"
+                    >
+                      <Download className="w-3 h-3" />
+                      <span>Unduh CSV</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleCopy('id,tahun,saldo_awal_tahun_lalu,saldo_realtime,catatan,updated_at', 'saldo')}
+                      className="flex items-center gap-1 text-[11px] text-purple-300 hover:text-white cursor-pointer"
+                    >
+                      {copiedText === 'saldo' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                      <span>Salin Header</span>
+                    </button>
+                  </div>
                 </div>
                 <p className="text-[11px] text-slate-300">
                   Kolom: <code>id, tahun, saldo_awal_tahun_lalu, saldo_realtime, catatan, updated_at</code>
@@ -747,19 +998,30 @@ export const GoogleSheetModal: React.FC<GoogleSheetModalProps> = ({
               <div className="p-3 rounded-2xl bg-white/5 border border-white/10 space-y-1.5">
                 <div className="flex items-center justify-between">
                   <span className="font-bold text-pink-300">3. Sheet "Transaksi"</span>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      handleCopy(
-                        'id,tanggal,jenis,nominal,sumber_dana,nama_penerima,keterangan,dibuat_oleh,created_at',
-                        'trx'
-                      )
-                    }
-                    className="flex items-center gap-1 text-[11px] text-purple-300 hover:text-white cursor-pointer"
-                  >
-                    {copiedText === 'trx' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                    <span>Salin Header</span>
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleDownloadCsv('Transaksi')}
+                      className="flex items-center gap-1 text-[10px] text-pink-300 hover:text-white px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 cursor-pointer transition-colors"
+                      title="Unduh file CSV siap import ke Google Sheets"
+                    >
+                      <Download className="w-3 h-3" />
+                      <span>Unduh CSV</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleCopy(
+                          'id,tanggal,jenis,nominal,sumber_dana,nama_penerima,keterangan,dibuat_oleh,created_at',
+                          'trx'
+                        )
+                      }
+                      className="flex items-center gap-1 text-[11px] text-purple-300 hover:text-white cursor-pointer"
+                    >
+                      {copiedText === 'trx' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                      <span>Salin Header</span>
+                    </button>
+                  </div>
                 </div>
                 <p className="text-[11px] text-slate-300">
                   Kolom: <code>id, tanggal, jenis, nominal, sumber_dana, nama_penerima, keterangan, dibuat_oleh, created_at</code>

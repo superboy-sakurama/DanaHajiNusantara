@@ -203,3 +203,112 @@ export function formatTanggalIndo(dateStr: string): string {
     return dateStr;
   }
 }
+
+/**
+ * Ekstrak daftar bulan unik dari transaksi yang tersedia
+ */
+export function getAvailableMonths(transactions: Transaction[]): { value: string; label: string }[] {
+  const monthsMap = new Map<string, string>();
+  const bulanNames = [
+    'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
+    'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
+  ];
+
+  for (const t of transactions) {
+    if (t.tanggal && /^\d{4}-\d{2}/.test(t.tanggal)) {
+      const ym = t.tanggal.substring(0, 7);
+      if (!monthsMap.has(ym)) {
+        const [yearStr, monthStr] = ym.split('-');
+        const monthIndex = parseInt(monthStr, 10) - 1;
+        const monthName = bulanNames[monthIndex] || monthStr;
+        monthsMap.set(ym, `${monthName} ${yearStr}`);
+      }
+    }
+  }
+
+  // Jika belum ada transaksi atau hanya ada 1, sediakan bulan haji standar
+  if (!monthsMap.has('2026-05')) {
+    monthsMap.set('2026-05', 'Mei 2026');
+  }
+  if (!monthsMap.has('2026-06')) {
+    monthsMap.set('2026-06', 'Juni 2026');
+  }
+
+  return Array.from(monthsMap.entries())
+    .map(([value, label]) => ({ value, label }))
+    .sort((a, b) => b.value.localeCompare(a.value));
+}
+
+/**
+ * Hitung total pengeluaran untuk periode tertentu ('all' atau 'YYYY-MM')
+ */
+export function calculatePeriodExpenditure(
+  transactions: Transaction[],
+  period: string = 'all'
+): number {
+  return transactions
+    .filter((t) => {
+      if (t.jenis !== 'pengeluaran') return false;
+      if (period === 'all') return true;
+      return t.tanggal.startsWith(period);
+    })
+    .reduce((sum, curr) => sum + (Math.abs(Number(curr.nominal)) || 0), 0);
+}
+
+/**
+ * Menghitung status plafon anggaran pengeluaran
+ */
+export function calculateBudgetStatus(
+  expenditure: number,
+  limit: number
+): {
+  limit: number;
+  expenditure: number;
+  percentage: number;
+  remaining: number;
+  isOverBudget: boolean;
+  status: 'safe' | 'warning' | 'danger';
+  statusLabel: string;
+} {
+  const safeLimit = Math.max(0, limit || 0);
+  const safeExp = Math.max(0, expenditure || 0);
+
+  if (safeLimit === 0) {
+    return {
+      limit: 0,
+      expenditure: safeExp,
+      percentage: safeExp > 0 ? 100 : 0,
+      remaining: -safeExp,
+      isOverBudget: safeExp > 0,
+      status: safeExp > 0 ? 'danger' : 'safe',
+      statusLabel: safeExp > 0 ? 'Plafon Belum Diatur' : 'Aman',
+    };
+  }
+
+  const rawPercentage = (safeExp / safeLimit) * 100;
+  const percentage = Math.round(rawPercentage * 10) / 10;
+  const remaining = safeLimit - safeExp;
+  const isOverBudget = remaining < 0;
+
+  let status: 'safe' | 'warning' | 'danger' = 'safe';
+  let statusLabel = 'Terkendali (Aman)';
+
+  if (isOverBudget || percentage >= 90) {
+    status = 'danger';
+    statusLabel = isOverBudget ? 'Melebihi Plafon' : 'Kritis (≥90%)';
+  } else if (percentage >= 70) {
+    status = 'warning';
+    statusLabel = 'Waspada (70-89%)';
+  }
+
+  return {
+    limit: safeLimit,
+    expenditure: safeExp,
+    percentage,
+    remaining,
+    isOverBudget,
+    status,
+    statusLabel,
+  };
+}
+

@@ -267,9 +267,25 @@ async function fetchSheetValuesWithApiKey(range: string): Promise<any[][] | null
     if (!response.ok) {
       lastFetchFailedAt = Date.now();
       const errData = await response.json().catch(() => ({}));
-      lastErrorMessage =
-        errData?.error?.message ||
-        `Akses sheet gagal (Status ${response.status}). Pastikan sharing spreadsheet: "Anyone with the link can view".`;
+      const rawMsg = errData?.error?.message || `HTTP ${response.status}`;
+      if (response.status === 403 || rawMsg.includes('PERMISSION_DENIED') || rawMsg.includes('permission')) {
+        lastErrorType = 'PERMISSION_DENIED';
+        lastErrorMessage = 'Akses Google Spreadsheet Ditolak: Dokumen belum dibuka untuk publik.';
+        lastSuggestions = [
+          'Buka file Google Spreadsheet Anda di browser.',
+          'Klik tombol "Bagikan" (Share) di pojok kanan atas.',
+          'Pada bagian "Akses umum" (General access), ubah dari "Dibatasi" menjadi "Siapa saja yang memiliki link dapat melihat" (Viewer).',
+        ];
+      } else if (response.status === 400 || rawMsg.includes('API key not valid')) {
+        lastErrorType = 'INVALID_API_KEY';
+        lastErrorMessage = 'API Key ditolak oleh Google Cloud: Kunci tidak valid atau tidak terdaftar.';
+        lastSuggestions = [
+          'Pastikan menyalin API Key dari menu Google Cloud Credentials (diawali AIzaSy...).',
+        ];
+      } else {
+        lastErrorMessage = rawMsg;
+        lastErrorType = 'UNKNOWN';
+      }
       verifiedConnected = false;
       return null;
     }
@@ -282,6 +298,7 @@ async function fetchSheetValuesWithApiKey(range: string): Promise<any[][] | null
     return data.values || [];
   } catch (err: any) {
     lastFetchFailedAt = Date.now();
+    lastErrorType = 'NETWORK_ERROR';
     lastErrorMessage = err?.message || 'Gangguan koneksi ke Google Sheets API';
     verifiedConnected = false;
     return null;
@@ -542,6 +559,210 @@ export async function testSheetsConnection(): Promise<{
     success: false,
     message: 'Metode koneksi tidak dikenali. Silakan masukkan API Key atau Service Account.',
   };
+}
+
+/**
+ * Inisialisasi otomatis: Buat sheet baru (Users, Saldo, Transaksi) dan pasang header
+ * langsung ke Google Spreadsheet tanpa membuat manual.
+ * TIDAK MENGUBAH / MENGHAPUS DATABASE YANG SUDAH ADA.
+ */
+export async function bootstrapSheets(): Promise<{
+  success: boolean;
+  message: string;
+  createdSheets: string[];
+  alreadyExisted: string[];
+  initializedHeaders: string[];
+  method: 'service_account' | 'api_key' | 'demo_mode';
+}> {
+  config.sheetId = extractSheetId(config.sheetId);
+  const method = getActiveAuthMethod();
+
+  if (method === 'demo_mode') {
+    return {
+      success: false,
+      message: 'Belum ada Google Spreadsheet ID atau Service Account yang dikonfigurasi.',
+      createdSheets: [],
+      alreadyExisted: [],
+      initializedHeaders: [],
+      method: 'demo_mode',
+    };
+  }
+
+  if (method === 'api_key') {
+    return {
+      success: false,
+      message:
+        'Google Sheets API v4 membatasi API Key hanya untuk operasi BACA (Read-Only) pada dokumen yang telah dibagikan publik. Untuk membuat lembar kerja dan menulis header langsung secara otomatis dari server ke Google Spreadsheet, gunakan kredensial Service Account pada tab "Service Acc".',
+      createdSheets: [],
+      alreadyExisted: [],
+      initializedHeaders: [],
+      method: 'api_key',
+    };
+  }
+
+  // Service Account aktif: Lakukan pembuatan sheet & header otomatis secara langsung!
+  const client = getServiceAccountClient();
+  if (!client) {
+    return {
+      success: false,
+      message: 'Kredensial Service Account belum lengkap atau format Private Key tidak valid.',
+      createdSheets: [],
+      alreadyExisted: [],
+      initializedHeaders: [],
+      method: 'service_account',
+    };
+  }
+
+  try {
+    // 1. Ambil metadata spreadsheet saat ini
+    const meta = await client.spreadsheets.get({ spreadsheetId: config.sheetId });
+    const existingTitles = (meta.data.sheets || []).map((s) => s.properties?.title || '');
+
+    const targetSheets = [
+      {
+        title: 'Users',
+        header: ['id', 'username', 'password_hash', 'role', 'nama_lengkap', 'jabatan'],
+        seedRows: memoryUsers.map((u) => [u.id, u.username, u.password_hash, u.role, u.nama_lengkap, u.jabatan || '']),
+      },
+      {
+        title: 'Saldo',
+        header: ['id', 'tahun', 'saldo_awal_tahun_lalu', 'saldo_realtime', 'catatan', 'updated_at'],
+        seedRows: [
+          [
+            memorySaldo.id,
+            memorySaldo.tahun,
+            memorySaldo.saldo_awal_tahun_lalu,
+            memorySaldo.saldo_realtime,
+            memorySaldo.catatan || '',
+            memorySaldo.updated_at || new Date().toISOString(),
+          ],
+        ],
+      },
+      {
+        title: 'Transaksi',
+        header: ['id', 'tanggal', 'jenis', 'nominal', 'sumber_dana', 'nama_penerima', 'keterangan', 'dibuat_oleh', 'created_at'],
+        seedRows: memoryTransactions.map((t) => [
+          t.id,
+          t.tanggal,
+          t.jenis,
+          t.nominal,
+          t.sumber_dana || '',
+          t.nama_penerima || '',
+          t.keterangan,
+          t.dibuat_oleh || '',
+          t.created_at || '',
+        ]),
+      },
+    ];
+
+    const createdSheets: string[] = [];
+    const alreadyExisted: string[] = [];
+    const initializedHeaders: string[] = [];
+
+    // 2. Deteksi sheet yang belum ada
+    const missingSheets = targetSheets.filter(
+      (ts) => !existingTitles.some((et) => et.trim().toLowerCase() === ts.title.toLowerCase())
+    );
+
+    // 3. Buat lembar kerja baru via batchUpdate
+    if (missingSheets.length > 0) {
+      const requests = missingSheets.map((ms) => ({
+        addSheet: {
+          properties: {
+            title: ms.title,
+            gridProperties: {
+              frozenRowCount: 1,
+            },
+          },
+        },
+      }));
+
+      await client.spreadsheets.batchUpdate({
+        spreadsheetId: config.sheetId,
+        requestBody: { requests },
+      });
+
+      missingSheets.forEach((ms) => createdSheets.push(ms.title));
+    }
+
+    // Catat yang sudah ada sebelumnya
+    targetSheets.forEach((ts) => {
+      if (!createdSheets.includes(ts.title)) {
+        alreadyExisted.push(ts.title);
+      }
+    });
+
+    // 4. Terapkan header & data awal hanya pada sheet yang baru dibuat atau yang baris 1-nya kosong
+    // (JANGAN MENGUBAH DATABASE / DATA YANG SUDAH ADA)
+    for (const ts of targetSheets) {
+      if (createdSheets.includes(ts.title)) {
+        // Sheet baru: Tulis header di baris 1 dan isi data seed
+        await client.spreadsheets.values.update({
+          spreadsheetId: config.sheetId,
+          range: `${ts.title}!A1:${String.fromCharCode(64 + ts.header.length)}${ts.seedRows.length + 1}`,
+          valueInputOption: 'USER_ENTERED',
+          requestBody: {
+            values: [ts.header, ...ts.seedRows],
+          },
+        });
+        initializedHeaders.push(ts.title);
+      } else {
+        // Sheet sudah ada: Cek apakah baris 1 kosong
+        try {
+          const checkRes = await client.spreadsheets.values.get({
+            spreadsheetId: config.sheetId,
+            range: `${ts.title}!A1:A1`,
+          });
+          const hasContent = checkRes.data.values && checkRes.data.values.length > 0;
+          if (!hasContent) {
+            // Baris 1 kosong: pasang header tanpa mengubah data lain
+            await client.spreadsheets.values.update({
+              spreadsheetId: config.sheetId,
+              range: `${ts.title}!A1:${String.fromCharCode(64 + ts.header.length)}1`,
+              valueInputOption: 'USER_ENTERED',
+              requestBody: {
+                values: [ts.header],
+              },
+            });
+            initializedHeaders.push(ts.title);
+          }
+        } catch {
+          // Abaikan jika tidak dapat dibaca
+        }
+      }
+    }
+
+    const createdStr = createdSheets.length > 0 ? `Lembar baru berhasil dibuat: ${createdSheets.join(', ')}. ` : '';
+    const existingStr = alreadyExisted.length > 0 ? `Lembar yang sudah ada tetap dipertahankan: ${alreadyExisted.join(', ')}. ` : '';
+    const msg = `Inisialisasi selesai! ${createdStr}${existingStr}Header dan struktur standar siap digunakan.`;
+
+    verifiedConnected = true;
+    lastErrorMessage = '';
+    lastErrorType = '';
+
+    return {
+      success: true,
+      message: msg,
+      createdSheets,
+      alreadyExisted,
+      initializedHeaders,
+      method: 'service_account',
+    };
+  } catch (err: any) {
+    const rawMsg = err.message || '';
+    let friendly = `Gagal menginisialisasi spreadsheet: ${rawMsg}`;
+    if (rawMsg.includes('permission') || rawMsg.includes('403')) {
+      friendly = `Akses ditolak: Pastikan Google Spreadsheet telah dibagikan (Share) ke email Service Account (${config.clientEmail}) sebagai Editor.`;
+    }
+    return {
+      success: false,
+      message: friendly,
+      createdSheets: [],
+      alreadyExisted: [],
+      initializedHeaders: [],
+      method: 'service_account',
+    };
+  }
 }
 
 // ==========================================

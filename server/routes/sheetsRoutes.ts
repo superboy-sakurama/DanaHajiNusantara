@@ -4,6 +4,7 @@ import {
   testSheetsConnection,
   updateSheetsConfig,
   resetSheetsConfig,
+  bootstrapSheets,
 } from '../googleSheets.ts';
 import { requireAuth, requireAdmin } from '../auth.ts';
 
@@ -48,6 +49,22 @@ router.post('/reset', requireAuth, requireAdmin, (req: Request, res: Response) =
     message: 'Konfigurasi berhasil direset kembali ke Mode Data Lokal.',
     data: getSheetsConfigStatus(),
   });
+});
+
+router.post('/bootstrap', requireAuth, requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const result = await bootstrapSheets();
+    res.json({
+      success: result.success,
+      data: result,
+      message: result.message,
+    });
+  } catch (err: any) {
+    res.status(500).json({
+      success: false,
+      error: err?.message || 'Gagal menginisialisasi lembar kerja otomatis',
+    });
+  }
 });
 
 export default router;

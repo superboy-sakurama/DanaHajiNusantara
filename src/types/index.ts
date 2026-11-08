@@ -42,6 +42,21 @@ export interface FinancialSummary {
   tahun: string;
 }
 
+export interface BudgetStatus {
+  limit: number;
+  expenditure: number;
+  percentage: number;
+  remaining: number;
+  isOverBudget: boolean;
+  status: 'safe' | 'warning' | 'danger';
+  statusLabel: string;
+}
+
+export interface BudgetPeriod {
+  value: string; // 'all' or 'YYYY-MM'
+  label: string;
+}
+
 export interface SheetsTestResult {
   success: boolean;
   message: string;
@@ -62,6 +77,15 @@ export interface SheetsTestResult {
     saldo: boolean;
     transaksi: boolean;
   };
+}
+
+export interface SheetsBootstrapResult {
+  success: boolean;
+  message: string;
+  createdSheets: string[];
+  alreadyExisted: string[];
+  initializedHeaders: string[];
+  method: 'service_account' | 'api_key' | 'demo_mode';
 }
 
 export interface GoogleSheetsConfig {
