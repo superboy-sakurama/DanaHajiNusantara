@@ -1,6 +1,14 @@
-import React from 'react';
+import React, { useState, useMemo } from 'react';
 import { Transaction, SaldoRecord, AuthUser } from '../types/index.ts';
-import { formatRupiah, formatTanggalIndo } from '../utils/finance.ts';
+import {
+  formatRupiah,
+  formatTanggalIndo,
+  filterTransactions,
+  getTransactionCategory,
+  getCategoryBadgeColor,
+  sortTransactionsDesc,
+  ALL_CATEGORIES,
+} from '../utils/finance.ts';
 import { StatCards } from '../components/StatCard.tsx';
 import { Kabah4DScene } from '../components/Kabah4DScene.tsx';
 import { BudgetTrackerCard } from '../components/BudgetTrackerCard.tsx';
@@ -13,6 +21,11 @@ import {
   TrendingUp,
   BarChart3,
   Calendar,
+  Search,
+  Filter,
+  X,
+  Tag,
+  RotateCcw,
 } from 'lucide-react';
 
 interface DashboardPageProps {
@@ -36,10 +49,34 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   onOpenExportModal,
   onNavigateTab,
 }) => {
-  // Sort recent transactions
-  const recentTransactions = [...transactions]
-    .sort((a, b) => b.tanggal.localeCompare(a.tanggal))
-    .slice(0, 5);
+  const [searchTerm, setSearchTerm] = useState<string>('');
+  const [filterType, setFilterType] = useState<'all' | 'penerimaan' | 'pengeluaran'>('all');
+  const [filterCategory, setFilterCategory] = useState<string>('all');
+  const [showExpanded, setShowExpanded] = useState<boolean>(false);
+
+  // Filter transactions based on search and category
+  const filteredTransactions = useMemo(() => {
+    return filterTransactions(transactions, {
+      jenis: filterType,
+      search: searchTerm,
+      kategori: filterCategory,
+    });
+  }, [transactions, filterType, searchTerm, filterCategory]);
+
+  const sortedFiltered = useMemo(() => {
+    return sortTransactionsDesc(filteredTransactions);
+  }, [filteredTransactions]);
+
+  const displayLimit = showExpanded || searchTerm.trim() || filterCategory !== 'all' || filterType !== 'all' ? 20 : 5;
+  const displayTransactions = sortedFiltered.slice(0, displayLimit);
+
+  const isFilterActive = searchTerm.trim() !== '' || filterCategory !== 'all' || filterType !== 'all';
+
+  const resetFilters = () => {
+    setSearchTerm('');
+    setFilterType('all');
+    setFilterCategory('all');
+  };
 
   const totalPenerimaan = transactions
     .filter((t) => t.jenis === 'penerimaan')
@@ -191,73 +228,267 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
         </div>
       </div>
 
-      {/* Riwayat Transaksi Terakhir */}
-      <div className="rounded-2xl p-4 bg-white/5 backdrop-blur-md border border-white/10 shadow-xl space-y-3">
-        <div className="flex items-center justify-between">
+      {/* Riwayat Transaksi Terkini dengan Fitur Pencarian & Filter Kategori */}
+      <div className="rounded-2xl p-4 bg-white/5 backdrop-blur-md border border-white/10 shadow-xl space-y-3.5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-1 border-b border-white/10">
           <div className="flex items-center gap-2">
             <Clock className="w-4 h-4 text-purple-400" />
-            <h3 className="text-xs font-bold text-white uppercase tracking-wider">
-              Transaksi Terkini
+            <h3 className="text-xs sm:text-sm font-bold text-white uppercase tracking-wider">
+              Pencarian & Transaksi Terkini
             </h3>
+            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">
+              {filteredTransactions.length} ditemukan
+            </span>
           </div>
-          <button
-            type="button"
-            onClick={() => onNavigateTab('penerimaan')}
-            className="text-[11px] text-pink-400 hover:text-pink-300 font-semibold"
-          >
-            Lihat Semua →
-          </button>
+
+          <div className="flex items-center gap-2 text-xs">
+            {isFilterActive && (
+              <button
+                type="button"
+                onClick={resetFilters}
+                className="flex items-center gap-1 text-[11px] text-pink-300 hover:text-pink-200 transition-colors cursor-pointer"
+                title="Reset semua filter pencarian"
+              >
+                <RotateCcw className="w-3 h-3" />
+                <span>Reset</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => onNavigateTab('penerimaan')}
+              className="text-[11px] text-purple-300 hover:text-pink-300 font-semibold transition-colors"
+            >
+              Lihat Detail →
+            </button>
+          </div>
         </div>
 
-        <div className="space-y-2">
-          {recentTransactions.length === 0 ? (
-            <div className="text-center py-6 text-slate-400 text-xs">
-              Belum ada riwayat transaksi yang dicatat.
+        {/* Search Bar & Category Filter Controls */}
+        <div className="space-y-2.5">
+          <div className="relative">
+            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
+              <Search className="w-4 h-4" />
+            </div>
+            <input
+              type="text"
+              aria-label="Cari transaksi di Dashboard"
+              placeholder="Cari penerima, sumber dana, kategori, keterangan, nominal..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full pl-9 pr-9 py-2 rounded-xl bg-black/40 border border-white/15 text-white text-xs sm:text-sm focus:border-pink-500 focus:outline-none placeholder:text-slate-500 shadow-inner"
+            />
+            {searchTerm && (
+              <button
+                type="button"
+                onClick={() => setSearchTerm('')}
+                className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-white"
+                aria-label="Hapus kata kunci pencarian"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+
+          {/* Filter Type Tabs & Category Dropdown */}
+          <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
+            {/* Type selector: Semua, Penerimaan, Pengeluaran */}
+            <div className="sm:col-span-6 flex items-center p-0.5 rounded-xl bg-black/30 border border-white/10 text-xs">
+              <button
+                type="button"
+                onClick={() => setFilterType('all')}
+                className={`flex-1 py-1.5 px-2 rounded-lg font-semibold text-center transition-all ${
+                  filterType === 'all'
+                    ? 'bg-purple-600 text-white shadow-md'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Semua ({transactions.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setFilterType('penerimaan')}
+                className={`flex-1 py-1.5 px-2 rounded-lg font-semibold text-center transition-all ${
+                  filterType === 'penerimaan'
+                    ? 'bg-emerald-600 text-white shadow-md'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Masuk ({transactions.filter((t) => t.jenis === 'penerimaan').length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setFilterType('pengeluaran')}
+                className={`flex-1 py-1.5 px-2 rounded-lg font-semibold text-center transition-all ${
+                  filterType === 'pengeluaran'
+                    ? 'bg-rose-600 text-white shadow-md'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Keluar ({transactions.filter((t) => t.jenis === 'pengeluaran').length})
+              </button>
+            </div>
+
+            {/* Category Filter Dropdown */}
+            <div className="sm:col-span-6 relative">
+              <div className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-purple-300">
+                <Tag className="w-3.5 h-3.5" />
+              </div>
+              <select
+                aria-label="Filter berdasarkan kategori di Dashboard"
+                value={filterCategory}
+                onChange={(e) => setFilterCategory(e.target.value)}
+                className="w-full pl-8 pr-3 py-1.5 rounded-xl bg-black/30 border border-white/15 text-white text-xs focus:border-pink-500 focus:outline-none cursor-pointer"
+              >
+                <option value="all" className="bg-slate-900 text-white">
+                  Semua Kategori ({transactions.length} Transaksi)
+                </option>
+                <optgroup label="Kategori Penerimaan" className="bg-slate-900 text-emerald-300 font-bold">
+                  {['BOK / Kemenkes', 'Dinkes / Pemda', 'BAZNAS & Hibah', 'Swadaya Petugas', 'Penerimaan Lainnya'].map(
+                    (cat) => (
+                      <option key={cat} value={cat} className="bg-slate-900 text-white font-normal">
+                        {cat}
+                      </option>
+                    )
+                  )}
+                </optgroup>
+                <optgroup label="Kategori Pengeluaran" className="bg-slate-900 text-rose-300 font-bold">
+                  {[
+                    'Obat & Farmasi',
+                    'Alkes & Alat Medis',
+                    'Seragam & Administrasi',
+                    'Logistik & Konsumsi',
+                    'Transportasi & Operasional',
+                    'Operasional Lainnya',
+                  ].map((cat) => (
+                    <option key={cat} value={cat} className="bg-slate-900 text-white font-normal">
+                      {cat}
+                    </option>
+                  ))}
+                </optgroup>
+              </select>
+            </div>
+          </div>
+
+          {/* Quick Category Pills */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-thin">
+            <span className="text-[10px] text-slate-400 font-medium shrink-0 flex items-center gap-1">
+              <Filter className="w-3 h-3 text-purple-400" />
+              Kategori Cepat:
+            </span>
+            {['Obat & Farmasi', 'Alkes & Alat Medis', 'BOK / Kemenkes', 'Logistik & Konsumsi'].map((cat) => {
+              const isSelected = filterCategory === cat;
+              const badge = getCategoryBadgeColor(cat);
+              return (
+                <button
+                  key={cat}
+                  type="button"
+                  onClick={() => setFilterCategory(isSelected ? 'all' : cat)}
+                  className={`text-[10px] px-2.5 py-1 rounded-full border transition-all shrink-0 cursor-pointer ${
+                    isSelected
+                      ? 'bg-pink-500 text-white border-pink-400 font-bold shadow-md shadow-pink-500/30'
+                      : `${badge.bg} ${badge.text} ${badge.border} hover:bg-white/10`
+                  }`}
+                >
+                  {cat}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Transaction Items List */}
+        <div className="space-y-2 pt-1">
+          {displayTransactions.length === 0 ? (
+            <div className="text-center py-8 px-4 rounded-xl bg-white/5 border border-dashed border-white/10 text-slate-400 text-xs space-y-2">
+              <Search className="w-6 h-6 mx-auto text-purple-400 opacity-60" />
+              <div className="font-semibold text-slate-200">
+                Tidak ada transaksi yang cocok
+              </div>
+              <p className="text-[11px] text-slate-400 max-w-xs mx-auto">
+                {isFilterActive
+                  ? 'Tidak ditemukan transaksi dengan kata kunci atau kategori yang dipilih.'
+                  : 'Belum ada transaksi yang dicatat dalam sistem.'}
+              </p>
+              {isFilterActive && (
+                <button
+                  type="button"
+                  onClick={resetFilters}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-pink-600/30 hover:bg-pink-600/50 text-pink-200 text-xs font-semibold border border-pink-500/30 transition-all cursor-pointer mt-1"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Reset Filter & Pencarian</span>
+                </button>
+              )}
             </div>
           ) : (
-            recentTransactions.map((trx) => (
-              <div
-                key={trx.id}
-                className="flex items-center justify-between p-2.5 rounded-xl bg-white/5 border border-white/5 hover:border-white/15 transition-all text-xs"
-              >
-                <div className="flex items-center gap-2.5 min-w-0 pr-2">
-                  <div
-                    className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
-                      trx.jenis === 'penerimaan'
-                        ? 'bg-emerald-500/20 text-emerald-400'
-                        : 'bg-rose-500/20 text-rose-400'
-                    }`}
-                  >
-                    {trx.jenis === 'penerimaan' ? (
-                      <ArrowDownLeft className="w-4 h-4" />
-                    ) : (
-                      <ArrowUpRight className="w-4 h-4" />
-                    )}
-                  </div>
-                  <div className="min-w-0">
-                    <div className="font-semibold text-slate-100 truncate">
-                      {trx.jenis === 'penerimaan' ? trx.sumber_dana : trx.nama_penerima}
-                    </div>
-                    <div className="text-[10px] text-purple-200/60 truncate">
-                      {formatTanggalIndo(trx.tanggal)} • {trx.keterangan}
-                    </div>
-                  </div>
-                </div>
+            displayTransactions.map((trx) => {
+              const cat = getTransactionCategory(trx);
+              const badge = getCategoryBadgeColor(cat);
 
-                <div className="text-right shrink-0">
-                  <div
-                    className={`font-bold ${
-                      trx.jenis === 'penerimaan' ? 'text-emerald-400' : 'text-rose-400'
-                    }`}
-                  >
-                    {trx.jenis === 'penerimaan' ? '+' : '-'}
-                    {formatRupiah(trx.nominal)}
+              return (
+                <div
+                  key={trx.id}
+                  className="flex items-center justify-between p-2.5 rounded-xl bg-white/5 border border-white/5 hover:border-white/15 transition-all text-xs group"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0 pr-2">
+                    <div
+                      className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
+                        trx.jenis === 'penerimaan'
+                          ? 'bg-emerald-500/20 text-emerald-400'
+                          : 'bg-rose-500/20 text-rose-400'
+                      }`}
+                    >
+                      {trx.jenis === 'penerimaan' ? (
+                        <ArrowDownLeft className="w-4 h-4" />
+                      ) : (
+                        <ArrowUpRight className="w-4 h-4" />
+                      )}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-slate-100 truncate">
+                          {trx.jenis === 'penerimaan' ? trx.sumber_dana : trx.nama_penerima}
+                        </span>
+                        <span
+                          className={`text-[9px] font-semibold px-2 py-0.5 rounded-full border shrink-0 ${badge.bg} ${badge.text} ${badge.border}`}
+                        >
+                          {cat}
+                        </span>
+                      </div>
+                      <div className="text-[10px] text-purple-200/70 truncate mt-0.5">
+                        {formatTanggalIndo(trx.tanggal)} • {trx.keterangan}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="text-right shrink-0">
+                    <div
+                      className={`font-bold ${
+                        trx.jenis === 'penerimaan' ? 'text-emerald-400' : 'text-rose-400'
+                      }`}
+                    >
+                      {trx.jenis === 'penerimaan' ? '+' : '-'}
+                      {formatRupiah(trx.nominal)}
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))
+              );
+            })
           )}
         </div>
+
+        {/* Expand / Show More toggle */}
+        {sortedFiltered.length > 5 && !showExpanded && !searchTerm && filterCategory === 'all' && filterType === 'all' && (
+          <div className="text-center pt-1">
+            <button
+              type="button"
+              onClick={() => setShowExpanded(true)}
+              className="text-[11px] text-purple-300 hover:text-pink-300 font-semibold px-3 py-1 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"
+            >
+              Tampilkan Lebih Banyak ({sortedFiltered.length - 5} lainnya) ↓
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

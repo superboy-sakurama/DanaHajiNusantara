@@ -61,14 +61,150 @@ export function calculateFinancialSummary(
   };
 }
 
+export const PENERIMAAN_CATEGORIES = [
+  'BOK / Kemenkes',
+  'Dinkes / Pemda',
+  'BAZNAS & Hibah',
+  'Swadaya Petugas',
+  'Penerimaan Lainnya',
+] as const;
+
+export const PENGELUARAN_CATEGORIES = [
+  'Obat & Farmasi',
+  'Alkes & Alat Medis',
+  'Seragam & Administrasi',
+  'Logistik & Konsumsi',
+  'Transportasi & Operasional',
+  'Operasional Lainnya',
+] as const;
+
+export const ALL_CATEGORIES = [
+  ...PENERIMAAN_CATEGORIES,
+  ...PENGELUARAN_CATEGORIES,
+] as const;
+
 /**
- * Filter data transaksi berdasarkan kriteria
+ * Mendeteksi atau mengembalikan kategori transaksi secara otomatis dan akurat
+ */
+export function getTransactionCategory(item: {
+  jenis: 'penerimaan' | 'pengeluaran';
+  sumber_dana?: string;
+  nama_penerima?: string;
+  keterangan?: string;
+  kategori?: string;
+}): string {
+  if (item.kategori && item.kategori.trim()) {
+    return item.kategori.trim();
+  }
+
+  const text = `${item.sumber_dana || ''} ${item.nama_penerima || ''} ${item.keterangan || ''}`.toLowerCase();
+
+  if (item.jenis === 'penerimaan') {
+    if (text.includes('bok') || text.includes('kemenkes') || text.includes('kementerian kesehatan')) {
+      return 'BOK / Kemenkes';
+    }
+    if (text.includes('dinkes') || text.includes('dinas kesehatan') || text.includes('pemda') || text.includes('apbd')) {
+      return 'Dinkes / Pemda';
+    }
+    if (text.includes('baznas') || text.includes('hibah') || text.includes('donasi') || text.includes('csr') || text.includes('bantuan')) {
+      return 'BAZNAS & Hibah';
+    }
+    if (text.includes('swadaya') || text.includes('iuran') || text.includes('mandiri') || text.includes('patungan') || text.includes('petugas')) {
+      return 'Swadaya Petugas';
+    }
+    return 'Penerimaan Lainnya';
+  } else {
+    // Pengeluaran
+    if (
+      text.includes('obat') ||
+      text.includes('farmasi') ||
+      text.includes('vitamin') ||
+      text.includes('paracetamol') ||
+      text.includes('antihistamin') ||
+      text.includes('amoxicillin') ||
+      text.includes('oralit') ||
+      text.includes('suplemen') ||
+      text.includes('antasida') ||
+      text.includes('apotek')
+    ) {
+      return 'Obat & Farmasi';
+    }
+    if (
+      text.includes('alkes') ||
+      text.includes('alat medis') ||
+      text.includes('tensi') ||
+      text.includes('stetoskop') ||
+      text.includes('glukometer') ||
+      text.includes('oximeter') ||
+      text.includes('oksigen') ||
+      text.includes('spuit') ||
+      text.includes('jarum') ||
+      text.includes('perban') ||
+      text.includes('kasa') ||
+      text.includes('plester') ||
+      text.includes('termometer') ||
+      text.includes('medis')
+    ) {
+      return 'Alkes & Alat Medis';
+    }
+    if (
+      text.includes('seragam') ||
+      text.includes('rompi') ||
+      text.includes('id card') ||
+      text.includes('nametag') ||
+      text.includes('atk') ||
+      text.includes('kertas') ||
+      text.includes('fotokopi') ||
+      text.includes('print') ||
+      text.includes('buku') ||
+      text.includes('administrasi') ||
+      text.includes('spanduk') ||
+      text.includes('banner')
+    ) {
+      return 'Seragam & Administrasi';
+    }
+    if (
+      text.includes('konsumsi') ||
+      text.includes('makan') ||
+      text.includes('snack') ||
+      text.includes('minum') ||
+      text.includes('katering') ||
+      text.includes('logistik') ||
+      text.includes('air mineral') ||
+      text.includes('nasi') ||
+      text.includes('ransum')
+    ) {
+      return 'Logistik & Konsumsi';
+    }
+    if (
+      text.includes('transport') ||
+      text.includes('bbm') ||
+      text.includes('bensin') ||
+      text.includes('solar') ||
+      text.includes('sewa mobil') ||
+      text.includes('tiket') ||
+      text.includes('kendaraan') ||
+      text.includes('akomodasi') ||
+      text.includes('hotel') ||
+      text.includes('pulsa') ||
+      text.includes('kuota') ||
+      text.includes('paket data')
+    ) {
+      return 'Transportasi & Operasional';
+    }
+    return 'Operasional Lainnya';
+  }
+}
+
+/**
+ * Filter data transaksi berdasarkan kriteria lengkap (jenis, kategori, bulan, tanggal, pencarian kata kunci)
  */
 export function filterTransactions(
   transactions: Transaction[],
   filters: {
     jenis?: 'all' | 'penerimaan' | 'pengeluaran';
     search?: string;
+    kategori?: string;
     startDate?: string;
     endDate?: string;
     month?: string; // Format 'YYYY-MM'
@@ -80,8 +216,16 @@ export function filterTransactions(
       return false;
     }
 
+    // Filter kategori
+    if (filters.kategori && filters.kategori !== 'all') {
+      const cat = getTransactionCategory(item);
+      if (cat.toLowerCase() !== filters.kategori.toLowerCase()) {
+        return false;
+      }
+    }
+
     // Filter bulan 'YYYY-MM'
-    if (filters.month && !item.tanggal.startsWith(filters.month)) {
+    if (filters.month && filters.month !== 'all' && !item.tanggal.startsWith(filters.month)) {
       return false;
     }
 
@@ -100,7 +244,9 @@ export function filterTransactions(
       const inSumber = item.sumber_dana?.toLowerCase().includes(q);
       const inPenerima = item.nama_penerima?.toLowerCase().includes(q);
       const inNominal = item.nominal?.toString().includes(q);
-      if (!inKet && !inSumber && !inPenerima && !inNominal) {
+      const inTanggal = item.tanggal?.toLowerCase().includes(q);
+      const inKategori = getTransactionCategory(item).toLowerCase().includes(q);
+      if (!inKet && !inSumber && !inPenerima && !inNominal && !inTanggal && !inKategori) {
         return false;
       }
     }
@@ -311,4 +457,33 @@ export function calculateBudgetStatus(
     statusLabel,
   };
 }
+
+/**
+ * Styling badge kategori transaksi untuk konsistensi visual di seluruh aplikasi
+ */
+export function getCategoryBadgeColor(category: string): { bg: string; text: string; border: string } {
+  switch (category) {
+    case 'Obat & Farmasi':
+      return { bg: 'bg-violet-500/20', text: 'text-violet-300', border: 'border-violet-500/30' };
+    case 'Alkes & Alat Medis':
+      return { bg: 'bg-cyan-500/20', text: 'text-cyan-300', border: 'border-cyan-500/30' };
+    case 'Seragam & Administrasi':
+      return { bg: 'bg-indigo-500/20', text: 'text-indigo-300', border: 'border-indigo-500/30' };
+    case 'Logistik & Konsumsi':
+      return { bg: 'bg-amber-500/20', text: 'text-amber-300', border: 'border-amber-500/30' };
+    case 'Transportasi & Operasional':
+      return { bg: 'bg-sky-500/20', text: 'text-sky-300', border: 'border-sky-500/30' };
+    case 'BOK / Kemenkes':
+      return { bg: 'bg-emerald-500/20', text: 'text-emerald-300', border: 'border-emerald-500/30' };
+    case 'Dinkes / Pemda':
+      return { bg: 'bg-teal-500/20', text: 'text-teal-300', border: 'border-teal-500/30' };
+    case 'BAZNAS & Hibah':
+      return { bg: 'bg-yellow-500/20', text: 'text-yellow-300', border: 'border-yellow-500/30' };
+    case 'Swadaya Petugas':
+      return { bg: 'bg-pink-500/20', text: 'text-pink-300', border: 'border-pink-500/30' };
+    default:
+      return { bg: 'bg-purple-500/20', text: 'text-purple-300', border: 'border-purple-500/30' };
+  }
+}
+
 

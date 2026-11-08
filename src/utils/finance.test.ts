@@ -10,6 +10,7 @@ import {
   calculateBudgetStatus,
   calculatePeriodExpenditure,
   getAvailableMonths,
+  getTransactionCategory,
 } from './finance.ts';
 import { Transaction } from '../types/index.ts';
 
@@ -251,4 +252,205 @@ test('getAvailableMonths extracts unique formatted months from transaction list'
   assert.ok(months.some((m) => m.value === '2026-05' && m.label === 'Mei 2026'));
   assert.ok(months.some((m) => m.value === '2026-04' && m.label === 'April 2026'));
 });
+
+test('getTransactionCategory accurately categorizes transactions by keywords or explicit field', () => {
+  // Explicit category overrides auto-detection
+  assert.equal(
+    getTransactionCategory({
+      jenis: 'pengeluaran',
+      kategori: 'Obat & Farmasi',
+      keterangan: 'Membeli sesuatu',
+    }),
+    'Obat & Farmasi'
+  );
+
+  // Auto-detect pengeluaran: Obat & Farmasi
+  assert.equal(
+    getTransactionCategory({
+      jenis: 'pengeluaran',
+      nama_penerima: 'Apotek Kimia Farma',
+      keterangan: 'Pembelian vitamin C dan oralit kloter',
+    }),
+    'Obat & Farmasi'
+  );
+
+  // Auto-detect pengeluaran: Alkes & Alat Medis
+  assert.equal(
+    getTransactionCategory({
+      jenis: 'pengeluaran',
+      nama_penerima: 'PT Alkes Sejahtera',
+      keterangan: 'Tensimeter digital dan strip glukometer',
+    }),
+    'Alkes & Alat Medis'
+  );
+
+  // Auto-detect pengeluaran: Seragam & Administrasi
+  assert.equal(
+    getTransactionCategory({
+      jenis: 'pengeluaran',
+      nama_penerima: 'Percetakan Berkah',
+      keterangan: 'Cetak rompi petugas haji dan id card',
+    }),
+    'Seragam & Administrasi'
+  );
+
+  // Auto-detect pengeluaran: Logistik & Konsumsi
+  assert.equal(
+    getTransactionCategory({
+      jenis: 'pengeluaran',
+      nama_penerima: 'Katering Al-Munawwarah',
+      keterangan: 'Konsumsi dan air mineral rapat pembekalan haji',
+    }),
+    'Logistik & Konsumsi'
+  );
+
+  // Auto-detect pengeluaran: Transportasi & Operasional
+  assert.equal(
+    getTransactionCategory({
+      jenis: 'pengeluaran',
+      nama_penerima: 'SPBU Ahmad Yani',
+      keterangan: 'BBM operasional pengantaran jemaah risti',
+    }),
+    'Transportasi & Operasional'
+  );
+
+  // Auto-detect penerimaan: BOK / Kemenkes
+  assert.equal(
+    getTransactionCategory({
+      jenis: 'penerimaan',
+      sumber_dana: 'Dana BOK Puskesmas',
+      keterangan: 'Alokasi operasional kesehatan haji',
+    }),
+    'BOK / Kemenkes'
+  );
+
+  // Auto-detect penerimaan: Dinkes / Pemda
+  assert.equal(
+    getTransactionCategory({
+      jenis: 'penerimaan',
+      sumber_dana: 'Dinas Kesehatan Kabupaten',
+      keterangan: 'Bantuan APBD posko haji',
+    }),
+    'Dinkes / Pemda'
+  );
+
+  // Auto-detect penerimaan: BAZNAS & Hibah
+  assert.equal(
+    getTransactionCategory({
+      jenis: 'penerimaan',
+      sumber_dana: 'BAZNAS Kabupaten',
+      keterangan: 'Hibah dana sosial jemaah uzur',
+    }),
+    'BAZNAS & Hibah'
+  );
+
+  // Auto-detect penerimaan: Swadaya Petugas
+  assert.equal(
+    getTransactionCategory({
+      jenis: 'penerimaan',
+      sumber_dana: 'Swadaya Tim Medis Haji',
+      keterangan: 'Iuran mandiri petugas',
+    }),
+    'Swadaya Petugas'
+  );
+});
+
+test('filterTransactions supports filtering by category and category keyword search', () => {
+  const transactions: Transaction[] = [
+    {
+      id: 'tx-1',
+      tanggal: '2026-05-01',
+      jenis: 'penerimaan',
+      nominal: 10000000,
+      sumber_dana: 'Dana BOK Kemenkes',
+      keterangan: 'Pencairan operasional',
+    },
+    {
+      id: 'tx-2',
+      tanggal: '2026-05-02',
+      jenis: 'penerimaan',
+      nominal: 3000000,
+      sumber_dana: 'Hibah BAZNAS Peduli',
+      keterangan: 'Bantuan suplemen jemaah',
+    },
+    {
+      id: 'tx-3',
+      tanggal: '2026-05-03',
+      jenis: 'pengeluaran',
+      nominal: 2500000,
+      nama_penerima: 'Apotek Mandiri',
+      keterangan: 'Pengadaan paracetamol dan amoxicillin',
+    },
+    {
+      id: 'tx-4',
+      tanggal: '2026-05-04',
+      jenis: 'pengeluaran',
+      nominal: 1200000,
+      nama_penerima: 'Toko Alkes Sehat',
+      keterangan: 'Pengadaan tensimeter digital',
+    },
+  ];
+
+  // Filter by category: 'Obat & Farmasi'
+  const obatList = filterTransactions(transactions, {
+    kategori: 'Obat & Farmasi',
+  });
+  assert.equal(obatList.length, 1);
+  assert.equal(obatList[0].id, 'tx-3');
+
+  // Filter by category: 'BOK / Kemenkes'
+  const bokList = filterTransactions(transactions, {
+    kategori: 'BOK / Kemenkes',
+  });
+  assert.equal(bokList.length, 1);
+  assert.equal(bokList[0].id, 'tx-1');
+
+  // Combined search and category
+  const tensiSearch = filterTransactions(transactions, {
+    search: 'Alkes',
+  });
+  // Search query matches detected category name 'Alkes & Alat Medis' or party name
+  assert.equal(tensiSearch.length, 1);
+  assert.equal(tensiSearch[0].id, 'tx-4');
+});
+
+test('spreadsheet row parsing handles formatted rupiah and calculates balance accurately', () => {
+  // Raw spreadsheet rows simulation
+  const rawSaldoRow = ['sld-2026', '1447 H / 2026 M', 'Rp 12.500.000', '28.200.000', 'Catatan kas', '2026-05-01'];
+  const rawTrxRows = [
+    ['TRX-001', '2026-05-01', 'penerimaan', '15.000.000', 'BOK Kemenkes', '', 'Operasional Tahap 1', 'Admin', '2026-05-01'],
+    ['TRX-002', '2026-05-03', 'pengeluaran', 'Rp 4.200.000', '', 'PT Kimia Farma', 'Obat Emergensi', 'Admin', '2026-05-03'],
+  ];
+
+  const parsedSaldoAwal = parseRupiah(rawSaldoRow[2]);
+  assert.equal(parsedSaldoAwal, 12500000);
+
+  const parsedTransactions: Transaction[] = rawTrxRows.map((r) => {
+    const jenis = (r[2]?.toLowerCase() === 'pengeluaran' ? 'pengeluaran' : 'penerimaan') as 'penerimaan' | 'pengeluaran';
+    const item: Transaction = {
+      id: r[0],
+      tanggal: r[1],
+      jenis,
+      nominal: parseRupiah(r[3]),
+      sumber_dana: jenis === 'penerimaan' ? r[4] : undefined,
+      nama_penerima: jenis === 'pengeluaran' ? r[5] : undefined,
+      keterangan: r[6],
+      dibuat_oleh: r[7],
+      created_at: r[8],
+    };
+    item.kategori = getTransactionCategory(item);
+    return item;
+  });
+
+  assert.equal(parsedTransactions[0].nominal, 15000000);
+  assert.equal(parsedTransactions[0].kategori, 'BOK / Kemenkes');
+  assert.equal(parsedTransactions[1].nominal, 4200000);
+  assert.equal(parsedTransactions[1].kategori, 'Obat & Farmasi');
+
+  const summary = calculateFinancialSummary(parsedSaldoAwal, parsedTransactions, rawSaldoRow[1]);
+  // 12.500.000 + 15.000.000 - 4.200.000 = 23.300.000
+  assert.equal(summary.saldoRealtime, 23300000);
+});
+
+
 

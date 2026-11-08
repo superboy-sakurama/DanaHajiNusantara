@@ -631,7 +631,7 @@ export const GoogleSheetModal: React.FC<GoogleSheetModalProps> = ({
                   <div className="p-2 rounded-xl bg-black/40 border border-white/10 flex flex-col justify-between">
                     <span className="font-semibold text-slate-200 text-[11px]">1. Users</span>
                     <span className="text-[10px] text-slate-400 mt-1">
-                      {testResult?.foundExpectedSheets?.users
+                      {(testResult?.foundExpectedSheets?.users ?? config?.foundExpectedSheets?.users)
                         ? '✓ Terdeteksi'
                         : config?.isConfigured
                         ? 'Belum sinkron'
@@ -643,7 +643,7 @@ export const GoogleSheetModal: React.FC<GoogleSheetModalProps> = ({
                   <div className="p-2 rounded-xl bg-black/40 border border-white/10 flex flex-col justify-between">
                     <span className="font-semibold text-slate-200 text-[11px]">2. Saldo</span>
                     <span className="text-[10px] text-slate-400 mt-1">
-                      {testResult?.foundExpectedSheets?.saldo
+                      {(testResult?.foundExpectedSheets?.saldo ?? config?.foundExpectedSheets?.saldo)
                         ? '✓ Terdeteksi'
                         : config?.isConfigured
                         ? 'Belum sinkron'
@@ -655,7 +655,7 @@ export const GoogleSheetModal: React.FC<GoogleSheetModalProps> = ({
                   <div className="p-2 rounded-xl bg-black/40 border border-white/10 flex flex-col justify-between">
                     <span className="font-semibold text-slate-200 text-[11px]">3. Transaksi</span>
                     <span className="text-[10px] text-slate-400 mt-1">
-                      {testResult?.foundExpectedSheets?.transaksi
+                      {(testResult?.foundExpectedSheets?.transaksi ?? config?.foundExpectedSheets?.transaksi)
                         ? '✓ Terdeteksi'
                         : config?.isConfigured
                         ? 'Belum sinkron'

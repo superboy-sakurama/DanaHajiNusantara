@@ -30,6 +30,7 @@ export interface Transaction {
   sumber_dana?: string; // Diisi jika jenis === 'penerimaan'
   nama_penerima?: string; // Diisi jika jenis === 'pengeluaran'
   keterangan: string;
+  kategori?: string; // Kategori pengeluaran/penerimaan
   dibuat_oleh?: string;
   created_at?: string;
 }

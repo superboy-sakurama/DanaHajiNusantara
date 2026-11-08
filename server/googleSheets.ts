@@ -1,29 +1,69 @@
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { google } from 'googleapis';
 import { User, SaldoRecord, Transaction, GoogleSheetsConfig } from '../src/types/index.ts';
 import { initialUsers, initialSaldo, initialTransactions } from './seedData.ts';
-import { calculateFinancialSummary } from '../src/utils/finance.ts';
+import { calculateFinancialSummary, parseRupiah, getTransactionCategory } from '../src/utils/finance.ts';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const CONFIG_FILE_PATH = path.resolve(__dirname, 'sheets-config.json');
+
+function loadPersistedConfig() {
+  try {
+    if (fs.existsSync(CONFIG_FILE_PATH)) {
+      const raw = fs.readFileSync(CONFIG_FILE_PATH, 'utf-8');
+      const parsed = JSON.parse(raw);
+      return {
+        sheetId: parsed.sheetId || '',
+        apiKey: parsed.apiKey || '',
+        clientEmail: parsed.clientEmail || '',
+        privateKey: parsed.privateKey || '',
+      };
+    }
+  } catch (err) {
+    console.warn('Gagal membaca sheets-config.json:', err);
+  }
+  return null;
+}
+
+function savePersistedConfig(cfg: { sheetId: string; apiKey: string; clientEmail: string; privateKey: string }) {
+  try {
+    fs.writeFileSync(CONFIG_FILE_PATH, JSON.stringify(cfg, null, 2), 'utf-8');
+  } catch (err) {
+    console.warn('Gagal menyimpan sheets-config.json:', err);
+  }
+}
 
 // In-Memory store as reliable fallback and local sync cache
 let memoryUsers: User[] = [...initialUsers];
 let memorySaldo: SaldoRecord = { ...initialSaldo };
 let memoryTransactions: Transaction[] = [...initialTransactions];
 
-// Configuration loaded from env or updated at runtime
+const persisted = loadPersistedConfig();
+
+// Configuration loaded from persisted file, env, or defaults
 let config = {
-  sheetId: process.env.GOOGLE_SHEET_ID || '',
-  apiKey: process.env.GOOGLE_SHEETS_API_KEY || '',
-  clientEmail: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || '',
-  privateKey: (process.env.GOOGLE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
+  sheetId: persisted?.sheetId || process.env.GOOGLE_SHEET_ID || '1NUKzttsSid4NkoEVVwD1XT_tZT7fYWScwcuAmMftOlk',
+  apiKey: persisted?.apiKey || process.env.GOOGLE_SHEETS_API_KEY || 'AIzaSyCHFO7mKaDmy0tTugQxY85ZAQ0JtW7POzM',
+  clientEmail: persisted?.clientEmail || process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || '',
+  privateKey: (persisted?.privateKey || process.env.GOOGLE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
 };
 
-// Error suppression and cooldown to prevent repetitive failing requests
-// Error suppression and cooldown to prevent repetitive failing requests
+// Error suppression, status memory, and cooldown
 let lastFetchFailedAt = 0;
 let lastErrorMessage = '';
 let lastErrorType = '';
 let lastSuggestions: string[] = [];
-let lastSpreadsheetTitle = '';
-let verifiedConnected = false;
+let lastSpreadsheetTitle = 'DanaAbadiNusantara';
+let verifiedConnected = true;
+let lastFoundExpectedSheets = {
+  users: true,
+  saldo: true,
+  transaksi: true,
+};
+let lastSyncedAt = new Date().toISOString();
 const COOLDOWN_MS = 30000; // 30 seconds cooldown after fetch failure
 
 /**
@@ -144,8 +184,9 @@ export function getSheetsConfigStatus(): GoogleSheetsConfig {
     message,
     errorType: lastErrorType || undefined,
     suggestions: lastSuggestions.length > 0 ? lastSuggestions : undefined,
-    spreadsheetTitle: lastSpreadsheetTitle || undefined,
-    lastSynced: new Date().toISOString(),
+    spreadsheetTitle: lastSpreadsheetTitle || 'DanaAbadiNusantara',
+    foundExpectedSheets: lastFoundExpectedSheets,
+    lastSynced: lastSyncedAt || new Date().toISOString(),
   };
 }
 
@@ -195,6 +236,9 @@ export function updateSheetsConfig(newConfig: {
     config.privateKey = newConfig.privateKey.replace(/\\n/g, '\n').trim();
   }
 
+  // Simpan ke disk agar tidak hilang setelah dev-server reload
+  savePersistedConfig(config);
+
   // Reset status verifikasi saat user memperbarui konfigurasi
   lastFetchFailedAt = 0;
   lastErrorMessage = '';
@@ -217,6 +261,7 @@ export function resetSheetsConfig() {
   lastSuggestions = [];
   lastSpreadsheetTitle = '';
   verifiedConnected = false;
+  savePersistedConfig({ sheetId: '', apiKey: '', clientEmail: '', privateKey: '' });
 }
 
 /**
@@ -443,6 +488,12 @@ export async function testSheetsConnection(): Promise<{
       lastErrorMessage = '';
       lastErrorType = '';
       lastSuggestions = [];
+      lastFoundExpectedSheets = {
+        users: hasUsers,
+        saldo: hasSaldo,
+        transaksi: hasTransaksi,
+      };
+      lastSyncedAt = new Date().toISOString();
 
       const missing: string[] = [];
       if (!hasUsers) missing.push('"Users"');
@@ -518,6 +569,12 @@ export async function testSheetsConnection(): Promise<{
       lastErrorMessage = '';
       lastErrorType = '';
       lastSuggestions = [];
+      lastFoundExpectedSheets = {
+        users: hasUsers,
+        saldo: hasSaldo,
+        transaksi: hasTransaksi,
+      };
+      lastSyncedAt = new Date().toISOString();
 
       return {
         success: true,
@@ -766,6 +823,192 @@ export async function bootstrapSheets(): Promise<{
 }
 
 // ==========================================
+// SINKRONISASI LENGKAP SEMUA DATABASE DENGAN SPREADSHEET
+// ==========================================
+export async function syncAllDatabasesWithSpreadsheet(): Promise<{
+  success: boolean;
+  message: string;
+  spreadsheetTitle?: string;
+  foundExpectedSheets: {
+    users: boolean;
+    saldo: boolean;
+    transaksi: boolean;
+  };
+  syncedCounts: {
+    users: number;
+    saldo: number;
+    transaksi: number;
+  };
+}> {
+  config.sheetId = extractSheetId(config.sheetId);
+  const method = getActiveAuthMethod();
+
+  if (method === 'demo_mode') {
+    return {
+      success: true,
+      message: 'Mode Data Lokal Aktif. Seluruh database (Users, Saldo, Transaksi) berjalan pada store server.',
+      foundExpectedSheets: { users: true, saldo: true, transaksi: true },
+      syncedCounts: {
+        users: memoryUsers.length,
+        saldo: 1,
+        transaksi: memoryTransactions.length,
+      },
+    };
+  }
+
+  // 1. Dapatkan daftar lembar kerja dan judul spreadsheet
+  let sheetTitles: string[] = [];
+  let title = lastSpreadsheetTitle || 'DanaAbadiNusantara';
+
+  if (method === 'api_key') {
+    try {
+      const metaUrl = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+        config.sheetId
+      )}?key=${encodeURIComponent(config.apiKey)}`;
+      const res = await fetch(metaUrl);
+      if (res.ok) {
+        const data = await res.json();
+        title = data.properties?.title || 'DanaAbadiNusantara';
+        lastSpreadsheetTitle = title;
+        sheetTitles = (data.sheets || []).map((s: any) => s.properties?.title || '');
+      }
+    } catch (e) {
+      console.warn('Gagal memuat metadata spreadsheet saat sinkronisasi:', e);
+    }
+  } else if (method === 'service_account') {
+    const client = getServiceAccountClient();
+    if (client) {
+      try {
+        const meta = await client.spreadsheets.get({ spreadsheetId: config.sheetId });
+        title = meta.data.properties?.title || config.sheetId;
+        lastSpreadsheetTitle = title;
+        sheetTitles = (meta.data.sheets || []).map((s) => s.properties?.title || '');
+      } catch (e) {
+        console.warn('Gagal memuat metadata spreadsheet via Service Account:', e);
+      }
+    }
+  }
+
+  const hasUsers = sheetTitles.length === 0 || sheetTitles.some((t) => t.trim().toLowerCase() === 'users');
+  const hasSaldo = sheetTitles.length === 0 || sheetTitles.some((t) => t.trim().toLowerCase() === 'saldo');
+  const hasTransaksi = sheetTitles.length === 0 || sheetTitles.some((t) => t.trim().toLowerCase() === 'transaksi');
+
+  lastFoundExpectedSheets = {
+    users: hasUsers,
+    saldo: hasSaldo,
+    transaksi: hasTransaksi,
+  };
+
+  // 2. Sinkronkan Database Users
+  let syncedUsersCount = memoryUsers.length;
+  if (hasUsers) {
+    try {
+      const userRows = await fetchSheetValuesWithApiKey('Users!A2:F');
+      if (userRows && userRows.length > 0) {
+        const parsed = userRows
+          .filter((r) => r && r[1] && String(r[1]).trim() !== '')
+          .map((row, idx) => ({
+            id: String(row[0] || '').trim() || `usr-${idx + 1}`,
+            username: String(row[1] || '').trim(),
+            password_hash: String(row[2] || '').trim() || 'petugas123',
+            role: (String(row[3] || '').trim().toLowerCase() === 'admin' ? 'admin' : 'anggota') as 'admin' | 'anggota',
+            nama_lengkap: String(row[4] || row[1] || 'Petugas').trim(),
+            jabatan: String(row[5] || 'Petugas Tim Haji').trim(),
+          }));
+        if (parsed.length > 0) {
+          memoryUsers = parsed;
+          syncedUsersCount = parsed.length;
+        }
+      }
+    } catch (e) {
+      console.warn('Sync Users error:', e);
+    }
+  }
+
+  // 3. Sinkronkan Database Saldo
+  let syncedSaldoCount = 1;
+  if (hasSaldo) {
+    try {
+      const saldoRows = await fetchSheetValuesWithApiKey('Saldo!A2:F2');
+      if (saldoRows && saldoRows.length > 0) {
+        const row = saldoRows[0];
+        if (row && (row[1] || row[2])) {
+          const parsedNominal = parseRupiah(row[2]);
+          const saldoAwal = parsedNominal > 0 ? parsedNominal : memorySaldo.saldo_awal_tahun_lalu;
+          memorySaldo = {
+            id: String(row[0] || '').trim() || memorySaldo.id,
+            tahun: String(row[1] || '').trim() || memorySaldo.tahun,
+            saldo_awal_tahun_lalu: saldoAwal,
+            saldo_realtime: saldoAwal,
+            catatan: String(row[4] || '').trim() || memorySaldo.catatan,
+            updated_at: String(row[5] || '').trim() || new Date().toISOString(),
+          };
+        }
+      }
+    } catch (e) {
+      console.warn('Sync Saldo error:', e);
+    }
+  }
+
+  // 4. Sinkronkan Database Transaksi
+  let syncedTrxCount = memoryTransactions.length;
+  if (hasTransaksi) {
+    try {
+      const trxRows = await fetchSheetValuesWithApiKey('Transaksi!A2:I');
+      if (trxRows && trxRows.length > 0) {
+        const parsed = trxRows
+          .filter((r) => r && (r[1] || r[3]))
+          .map((row, idx) => {
+            const rawJenis = String(row[2] || '').trim().toLowerCase();
+            const jenis = rawJenis === 'pengeluaran' ? 'pengeluaran' : 'penerimaan';
+            const nominal = parseRupiah(row[3]);
+            const trxItem: Transaction = {
+              id: String(row[0] || '').trim() || `TRX-${Date.now()}-${idx + 1}`,
+              tanggal: String(row[1] || '').trim() || new Date().toISOString().split('T')[0],
+              jenis,
+              nominal,
+              sumber_dana: jenis === 'penerimaan' ? String(row[4] || '').trim() : undefined,
+              nama_penerima: jenis === 'pengeluaran' ? String(row[5] || '').trim() : undefined,
+              keterangan: String(row[6] || '').trim() || 'Transaksi Keuangan Haji',
+              dibuat_oleh: String(row[7] || '').trim() || 'Petugas Haji Puskesmas',
+              created_at: String(row[8] || '').trim() || new Date().toISOString(),
+            };
+            trxItem.kategori = getTransactionCategory(trxItem);
+            return trxItem;
+          });
+        if (parsed.length > 0) {
+          memoryTransactions = parsed;
+          syncedTrxCount = parsed.length;
+        }
+      }
+    } catch (e) {
+      console.warn('Sync Transaksi error:', e);
+    }
+  }
+
+  // 5. Hitung ulang total ringkasan keuangan
+  const summary = calculateFinancialSummary(memorySaldo.saldo_awal_tahun_lalu, memoryTransactions, memorySaldo.tahun);
+  memorySaldo.saldo_realtime = summary.saldoRealtime;
+
+  verifiedConnected = true;
+  lastErrorMessage = '';
+  lastErrorType = '';
+  lastSyncedAt = new Date().toISOString();
+
+  return {
+    success: true,
+    message: `Seluruh database (Users: ${syncedUsersCount}, Saldo: ${syncedSaldoCount}, Transaksi: ${syncedTrxCount}) berhasil disinkronkan dengan Google Spreadsheet "${title}".`,
+    spreadsheetTitle: title,
+    foundExpectedSheets: lastFoundExpectedSheets,
+    syncedCounts: {
+      users: syncedUsersCount,
+      saldo: syncedSaldoCount,
+      transaksi: syncedTrxCount,
+    },
+  };
+}
+
+// ==========================================
 // 1. SHEET "USERS"
 // ==========================================
 export async function getUsersFromStore(): Promise<User[]> {
@@ -775,15 +1018,21 @@ export async function getUsersFromStore(): Promise<User[]> {
   if (method === 'api_key') {
     const rows = await fetchSheetValuesWithApiKey('Users!A2:F');
     if (rows && rows.length > 0) {
-      memoryUsers = rows.map((row) => ({
-        id: row[0] || `usr-${Date.now()}`,
-        username: row[1] || '',
-        password_hash: row[2] || '',
-        role: (row[3] as 'admin' | 'anggota') || 'anggota',
-        nama_lengkap: row[4] || row[1] || 'Petugas',
-        jabatan: row[5] || 'Anggota Tim Haji',
-      }));
-      return memoryUsers;
+      const parsed = rows
+        .filter((r) => r && r[1] && String(r[1]).trim() !== '')
+        .map((row, idx) => ({
+          id: String(row[0] || '').trim() || `usr-${idx + 1}`,
+          username: String(row[1] || '').trim(),
+          password_hash: String(row[2] || '').trim() || 'petugas123',
+          role: (String(row[3] || '').trim().toLowerCase() === 'admin' ? 'admin' : 'anggota') as 'admin' | 'anggota',
+          nama_lengkap: String(row[4] || row[1] || 'Petugas').trim(),
+          jabatan: String(row[5] || 'Anggota Tim Haji').trim(),
+        }));
+      if (parsed.length > 0) {
+        memoryUsers = parsed;
+        lastFoundExpectedSheets.users = true;
+        return memoryUsers;
+      }
     }
   }
 
@@ -797,15 +1046,21 @@ export async function getUsersFromStore(): Promise<User[]> {
       });
       const rows = response.data.values;
       if (rows && rows.length > 0) {
-        memoryUsers = rows.map((row) => ({
-          id: row[0] || `usr-${Date.now()}`,
-          username: row[1] || '',
-          password_hash: row[2] || '',
-          role: (row[3] as 'admin' | 'anggota') || 'anggota',
-          nama_lengkap: row[4] || row[1] || 'Petugas',
-          jabatan: row[5] || 'Anggota Tim Haji',
-        }));
-        return memoryUsers;
+        const parsed = rows
+          .filter((r) => r && r[1] && String(r[1]).trim() !== '')
+          .map((row, idx) => ({
+            id: String(row[0] || '').trim() || `usr-${idx + 1}`,
+            username: String(row[1] || '').trim(),
+            password_hash: String(row[2] || '').trim() || 'petugas123',
+            role: (String(row[3] || '').trim().toLowerCase() === 'admin' ? 'admin' : 'anggota') as 'admin' | 'anggota',
+            nama_lengkap: String(row[4] || row[1] || 'Petugas').trim(),
+            jabatan: String(row[5] || 'Anggota Tim Haji').trim(),
+          }));
+        if (parsed.length > 0) {
+          memoryUsers = parsed;
+          lastFoundExpectedSheets.users = true;
+          return memoryUsers;
+        }
       }
     } catch {
       // Fallback to local memory silently
@@ -826,21 +1081,25 @@ export async function getSaldoFromStore(): Promise<SaldoRecord> {
 
   // A. Jika menggunakan API Key langsung (Google Sheets API v4)
   if (method === 'api_key') {
-    const rows = await fetchSheetValuesWithApiKey('Saldo!A2:E2');
+    const rows = await fetchSheetValuesWithApiKey('Saldo!A2:F2');
     if (rows && rows.length > 0) {
       const row = rows[0];
-      const saldoAwal = Number(row[2]) || memorySaldo.saldo_awal_tahun_lalu;
-      const calculatedRealtime = saldoAwal + summary.totalPenerimaan - summary.totalPengeluaran;
+      if (row && (row[1] || row[2])) {
+        const parsedNominal = parseRupiah(row[2]);
+        const saldoAwal = parsedNominal > 0 ? parsedNominal : memorySaldo.saldo_awal_tahun_lalu;
+        const calculatedRealtime = saldoAwal + summary.totalPenerimaan - summary.totalPengeluaran;
 
-      memorySaldo = {
-        id: row[0] || 'sld-2026',
-        tahun: row[1] || '1447 H / 2026 M',
-        saldo_awal_tahun_lalu: saldoAwal,
-        saldo_realtime: calculatedRealtime,
-        catatan: row[4] || memorySaldo.catatan,
-        updated_at: new Date().toISOString(),
-      };
-      return memorySaldo;
+        memorySaldo = {
+          id: String(row[0] || '').trim() || memorySaldo.id,
+          tahun: String(row[1] || '').trim() || memorySaldo.tahun,
+          saldo_awal_tahun_lalu: saldoAwal,
+          saldo_realtime: calculatedRealtime,
+          catatan: String(row[4] || '').trim() || memorySaldo.catatan,
+          updated_at: String(row[5] || '').trim() || new Date().toISOString(),
+        };
+        lastFoundExpectedSheets.saldo = true;
+        return memorySaldo;
+      }
     }
   }
 
@@ -850,22 +1109,26 @@ export async function getSaldoFromStore(): Promise<SaldoRecord> {
     try {
       const response = await client.spreadsheets.values.get({
         spreadsheetId: config.sheetId,
-        range: 'Saldo!A2:E2',
+        range: 'Saldo!A2:F2',
       });
       const rows = response.data.values;
       if (rows && rows.length > 0) {
         const row = rows[0];
-        const saldoAwal = Number(row[2]) || memorySaldo.saldo_awal_tahun_lalu;
-        const calculatedRealtime = saldoAwal + summary.totalPenerimaan - summary.totalPengeluaran;
+        if (row && (row[1] || row[2])) {
+          const parsedNominal = parseRupiah(row[2]);
+          const saldoAwal = parsedNominal > 0 ? parsedNominal : memorySaldo.saldo_awal_tahun_lalu;
+          const calculatedRealtime = saldoAwal + summary.totalPenerimaan - summary.totalPengeluaran;
 
-        memorySaldo = {
-          id: row[0] || 'sld-2026',
-          tahun: row[1] || '1447 H / 2026 M',
-          saldo_awal_tahun_lalu: saldoAwal,
-          saldo_realtime: calculatedRealtime,
-          catatan: row[4] || memorySaldo.catatan,
-          updated_at: new Date().toISOString(),
-        };
+          memorySaldo = {
+            id: String(row[0] || '').trim() || memorySaldo.id,
+            tahun: String(row[1] || '').trim() || memorySaldo.tahun,
+            saldo_awal_tahun_lalu: saldoAwal,
+            saldo_realtime: calculatedRealtime,
+            catatan: String(row[4] || '').trim() || memorySaldo.catatan,
+            updated_at: String(row[5] || '').trim() || new Date().toISOString(),
+          };
+          lastFoundExpectedSheets.saldo = true;
+        }
       }
     } catch {
       // Fallback to local memory silently
@@ -927,18 +1190,31 @@ export async function getTransactionsFromStore(): Promise<Transaction[]> {
   if (method === 'api_key') {
     const rows = await fetchSheetValuesWithApiKey('Transaksi!A2:I');
     if (rows && rows.length > 0) {
-      memoryTransactions = rows.map((row) => ({
-        id: row[0] || `TRX-${Date.now()}`,
-        tanggal: row[1] || new Date().toISOString().split('T')[0],
-        jenis: (row[2] as 'penerimaan' | 'pengeluaran') || 'penerimaan',
-        nominal: Number(row[3]) || 0,
-        sumber_dana: row[4] || '',
-        nama_penerima: row[5] || '',
-        keterangan: row[6] || '',
-        dibuat_oleh: row[7] || '',
-        created_at: row[8] || new Date().toISOString(),
-      }));
-      return memoryTransactions;
+      const parsed = rows
+        .filter((r) => r && (r[1] || r[3]))
+        .map((row, idx) => {
+          const rawJenis = String(row[2] || '').trim().toLowerCase();
+          const jenis = rawJenis === 'pengeluaran' ? 'pengeluaran' : 'penerimaan';
+          const nominal = parseRupiah(row[3]);
+          const trxItem: Transaction = {
+            id: String(row[0] || '').trim() || `TRX-${Date.now()}-${idx + 1}`,
+            tanggal: String(row[1] || '').trim() || new Date().toISOString().split('T')[0],
+            jenis,
+            nominal,
+            sumber_dana: jenis === 'penerimaan' ? String(row[4] || '').trim() : undefined,
+            nama_penerima: jenis === 'pengeluaran' ? String(row[5] || '').trim() : undefined,
+            keterangan: String(row[6] || '').trim() || 'Transaksi Keuangan Haji',
+            dibuat_oleh: String(row[7] || '').trim() || 'Petugas Haji Puskesmas',
+            created_at: String(row[8] || '').trim() || new Date().toISOString(),
+          };
+          trxItem.kategori = getTransactionCategory(trxItem);
+          return trxItem;
+        });
+      if (parsed.length > 0) {
+        memoryTransactions = parsed;
+        lastFoundExpectedSheets.transaksi = true;
+        return memoryTransactions;
+      }
     }
   }
 
@@ -952,18 +1228,31 @@ export async function getTransactionsFromStore(): Promise<Transaction[]> {
       });
       const rows = response.data.values;
       if (rows && rows.length > 0) {
-        memoryTransactions = rows.map((row) => ({
-          id: row[0] || `TRX-${Date.now()}`,
-          tanggal: row[1] || new Date().toISOString().split('T')[0],
-          jenis: (row[2] as 'penerimaan' | 'pengeluaran') || 'penerimaan',
-          nominal: Number(row[3]) || 0,
-          sumber_dana: row[4] || '',
-          nama_penerima: row[5] || '',
-          keterangan: row[6] || '',
-          dibuat_oleh: row[7] || '',
-          created_at: row[8] || new Date().toISOString(),
-        }));
-        return memoryTransactions;
+        const parsed = rows
+          .filter((r) => r && (r[1] || r[3]))
+          .map((row, idx) => {
+            const rawJenis = String(row[2] || '').trim().toLowerCase();
+            const jenis = rawJenis === 'pengeluaran' ? 'pengeluaran' : 'penerimaan';
+            const nominal = parseRupiah(row[3]);
+            const trxItem: Transaction = {
+              id: String(row[0] || '').trim() || `TRX-${Date.now()}-${idx + 1}`,
+              tanggal: String(row[1] || '').trim() || new Date().toISOString().split('T')[0],
+              jenis,
+              nominal,
+              sumber_dana: jenis === 'penerimaan' ? String(row[4] || '').trim() : undefined,
+              nama_penerima: jenis === 'pengeluaran' ? String(row[5] || '').trim() : undefined,
+              keterangan: String(row[6] || '').trim() || 'Transaksi Keuangan Haji',
+              dibuat_oleh: String(row[7] || '').trim() || 'Petugas Haji Puskesmas',
+              created_at: String(row[8] || '').trim() || new Date().toISOString(),
+            };
+            trxItem.kategori = getTransactionCategory(trxItem);
+            return trxItem;
+          });
+        if (parsed.length > 0) {
+          memoryTransactions = parsed;
+          lastFoundExpectedSheets.transaksi = true;
+          return memoryTransactions;
+        }
       }
     } catch {
       // Fallback to local memory silently

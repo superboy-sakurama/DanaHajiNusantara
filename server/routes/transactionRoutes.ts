@@ -29,7 +29,7 @@ router.get('/', requireAuth, async (req: AuthenticatedRequest, res: Response) =>
 // POST new transaction - ADMIN ONLY
 router.post('/', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { tanggal, jenis, nominal, sumber_dana, nama_penerima, keterangan } = req.body;
+    const { tanggal, jenis, nominal, sumber_dana, nama_penerima, keterangan, kategori } = req.body;
 
     const validation = validateTransactionForm({
       tanggal,
@@ -56,6 +56,7 @@ router.post('/', requireAuth, requireAdmin, async (req: AuthenticatedRequest, re
       sumber_dana: jenis === 'penerimaan' ? sumber_dana : undefined,
       nama_penerima: jenis === 'pengeluaran' ? nama_penerima : undefined,
       keterangan,
+      kategori: kategori ? String(kategori).trim() : undefined,
       dibuat_oleh: req.user?.nama_lengkap || req.user?.username || 'Admin Petugas Haji',
     });
 
@@ -76,7 +77,7 @@ router.post('/', requireAuth, requireAdmin, async (req: AuthenticatedRequest, re
 router.put('/:id', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
-    const { tanggal, jenis, nominal, sumber_dana, nama_penerima, keterangan } = req.body;
+    const { tanggal, jenis, nominal, sumber_dana, nama_penerima, keterangan, kategori } = req.body;
 
     const validation = validateTransactionForm({
       tanggal,
@@ -102,6 +103,7 @@ router.put('/:id', requireAuth, requireAdmin, async (req: AuthenticatedRequest, 
       nominal: Math.abs(Number(nominal)),
       sumber_dana: jenis === 'penerimaan' ? sumber_dana : undefined,
       nama_penerima: jenis === 'pengeluaran' ? nama_penerima : undefined,
+      kategori: kategori ? String(kategori).trim() : undefined,
       keterangan,
     });
 

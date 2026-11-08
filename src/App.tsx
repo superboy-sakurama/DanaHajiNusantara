@@ -57,6 +57,7 @@ function MainAppShell() {
   const loadAllData = useCallback(async () => {
     try {
       setLoadingData(true);
+      await api.syncSheets().catch(() => null);
       const [saldoData, trxList, sheetsStatus] = await Promise.all([
         api.getSaldo(),
         api.getTransactions(),

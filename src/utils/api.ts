@@ -157,6 +157,13 @@ export const api = {
     return res.data!;
   },
 
+  async syncSheets(): Promise<{ success: boolean; message: string; data?: any }> {
+    const res = await request<ApiResponse<any>>('/api/sheets/sync', {
+      method: 'POST',
+    });
+    return res.data || { success: res.success, message: res.message || 'Sinkronisasi berhasil' };
+  },
+
   async bootstrapSheets(): Promise<SheetsBootstrapResult> {
     const res = await request<ApiResponse<SheetsBootstrapResult>>('/api/sheets/bootstrap', {
       method: 'POST',

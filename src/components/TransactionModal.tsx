@@ -1,7 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { Transaction, TransactionType } from '../types/index.ts';
-import { formatRupiah, parseRupiah } from '../utils/finance.ts';
-import { X, Save, ArrowDownLeft, ArrowUpRight } from 'lucide-react';
+import {
+  formatRupiah,
+  parseRupiah,
+  PENERIMAAN_CATEGORIES,
+  PENGELUARAN_CATEGORIES,
+  getTransactionCategory,
+} from '../utils/finance.ts';
+import { X, Save, ArrowDownLeft, ArrowUpRight, Tag } from 'lucide-react';
 
 interface TransactionModalProps {
   isOpen: boolean;
@@ -23,6 +29,7 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
   const [nominalStr, setNominalStr] = useState<string>('');
   const [sumberDana, setSumberDana] = useState<string>('');
   const [namaPenerima, setNamaPenerima] = useState<string>('');
+  const [kategori, setKategori] = useState<string>('');
   const [keterangan, setKeterangan] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -34,6 +41,7 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
       setNominalStr(initialData.nominal.toString());
       setSumberDana(initialData.sumber_dana || '');
       setNamaPenerima(initialData.nama_penerima || '');
+      setKategori(initialData.kategori || getTransactionCategory(initialData));
       setKeterangan(initialData.keterangan || '');
     } else {
       setJenis(defaultType);
@@ -41,6 +49,7 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
       setNominalStr('');
       setSumberDana('');
       setNamaPenerima('');
+      setKategori(defaultType === 'penerimaan' ? 'BOK / Kemenkes' : 'Obat & Farmasi');
       setKeterangan('');
     }
     setErrorMsg(null);
@@ -82,6 +91,7 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
         nominal: nominalNum,
         sumber_dana: jenis === 'penerimaan' ? sumberDana.trim() : undefined,
         nama_penerima: jenis === 'pengeluaran' ? namaPenerima.trim() : undefined,
+        kategori: kategori.trim() || undefined,
         keterangan: keterangan.trim(),
       });
       onClose();
@@ -135,7 +145,12 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
             <div className="grid grid-cols-2 gap-2 p-1 rounded-xl bg-black/40 border border-white/10">
               <button
                 type="button"
-                onClick={() => setJenis('penerimaan')}
+                onClick={() => {
+                  setJenis('penerimaan');
+                  if (!PENERIMAAN_CATEGORIES.includes(kategori as any)) {
+                    setKategori('BOK / Kemenkes');
+                  }
+                }}
                 className={`flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-bold transition-all ${
                   jenis === 'penerimaan'
                     ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/30'
@@ -147,7 +162,12 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => setJenis('pengeluaran')}
+                onClick={() => {
+                  setJenis('pengeluaran');
+                  if (!PENGELUARAN_CATEGORIES.includes(kategori as any)) {
+                    setKategori('Obat & Farmasi');
+                  }
+                }}
                 className={`flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-bold transition-all ${
                   jenis === 'pengeluaran'
                     ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/30'
@@ -259,6 +279,38 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
               </div>
             </div>
           )}
+
+          {/* Kategori Transaksi */}
+          <div>
+            <label htmlFor="trx-kategori" className="block text-xs font-semibold text-purple-200 mb-1">
+              Kategori Transaksi <span className="text-rose-400">*</span>
+            </label>
+            <div className="relative">
+              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-purple-300">
+                <Tag className="w-3.5 h-3.5" />
+              </div>
+              <select
+                id="trx-kategori"
+                value={kategori}
+                onChange={(e) => setKategori(e.target.value)}
+                className="w-full pl-9 pr-3 py-2 rounded-xl bg-black/30 border border-white/15 text-white text-xs sm:text-sm focus:border-pink-500 focus:outline-none cursor-pointer"
+              >
+                {jenis === 'penerimaan' ? (
+                  PENERIMAAN_CATEGORIES.map((cat) => (
+                    <option key={cat} value={cat} className="bg-slate-900 text-white">
+                      {cat}
+                    </option>
+                  ))
+                ) : (
+                  PENGELUARAN_CATEGORIES.map((cat) => (
+                    <option key={cat} value={cat} className="bg-slate-900 text-white">
+                      {cat}
+                    </option>
+                  ))
+                )}
+              </select>
+            </div>
+          </div>
 
           {/* Keterangan */}
           <div>

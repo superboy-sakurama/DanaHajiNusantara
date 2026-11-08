@@ -5,10 +5,43 @@ import {
   updateSheetsConfig,
   resetSheetsConfig,
   bootstrapSheets,
+  syncAllDatabasesWithSpreadsheet,
 } from '../googleSheets.ts';
 import { requireAuth, requireAdmin } from '../auth.ts';
 
 const router = Router();
+
+router.post('/sync', async (req: Request, res: Response) => {
+  try {
+    const result = await syncAllDatabasesWithSpreadsheet();
+    res.json({
+      success: result.success,
+      data: result,
+      message: result.message,
+    });
+  } catch (err: any) {
+    res.status(500).json({
+      success: false,
+      error: err?.message || 'Gagal menyinkronkan database dengan Google Spreadsheet',
+    });
+  }
+});
+
+router.get('/sync', async (req: Request, res: Response) => {
+  try {
+    const result = await syncAllDatabasesWithSpreadsheet();
+    res.json({
+      success: result.success,
+      data: result,
+      message: result.message,
+    });
+  } catch (err: any) {
+    res.status(500).json({
+      success: false,
+      error: err?.message || 'Gagal menyinkronkan database dengan Google Spreadsheet',
+    });
+  }
+});
 
 router.get('/status', (req: Request, res: Response) => {
   res.json({
