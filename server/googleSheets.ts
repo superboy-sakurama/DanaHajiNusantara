@@ -17,12 +17,50 @@ let config = {
 };
 
 // Error suppression and cooldown to prevent repetitive failing requests
+// Error suppression and cooldown to prevent repetitive failing requests
 let lastFetchFailedAt = 0;
 let lastErrorMessage = '';
-const COOLDOWN_MS = 60000; // 60 seconds cooldown after fetch failure
+let lastErrorType = '';
+let lastSuggestions: string[] = [];
+let lastSpreadsheetTitle = '';
+let verifiedConnected = false;
+const COOLDOWN_MS = 30000; // 30 seconds cooldown after fetch failure
 
 /**
- * Validasi apakah API Key berformat valid (bukan placeholder / private key)
+ * Ekstrak Spreadsheet ID dari format URL atau string ID mentah
+ */
+export function extractSheetId(input: string): string {
+  if (!input) return '';
+  const clean = input.trim();
+  const match = clean.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  if (match && match[1]) {
+    return match[1];
+  }
+  return clean;
+}
+
+/**
+ * Deteksi apakah sebuah string merupakan Key ID heksadesimal dari Service Account
+ * (Biasanya 32-45 karakter hex seperti 0d909848fae32a67e15a... yang sering salah disalin sebagai API Key)
+ */
+export function isHexKeyId(str: string): boolean {
+  if (!str) return false;
+  const clean = str.trim();
+  return /^[0-9a-f]{32,45}$/i.test(clean);
+}
+
+/**
+ * Validasi apakah API Key berformat Google Cloud API Key
+ * Google API Key standar diawali dengan 'AIza' dan sekitar 39 karakter
+ */
+export function isGoogleApiKey(key: string): boolean {
+  if (!key) return false;
+  const clean = key.trim();
+  return clean.startsWith('AIza') && clean.length >= 30;
+}
+
+/**
+ * Validasi apakah API Key memenuhi syarat dasar
  */
 function isValidApiKey(key: string): boolean {
   if (!key) return false;
@@ -44,7 +82,7 @@ function isValidApiKey(key: string): boolean {
  */
 function isValidSheetId(id: string): boolean {
   if (!id) return false;
-  const clean = id.trim();
+  const clean = extractSheetId(id);
   if (clean.startsWith('YOUR_') || clean.startsWith('MY_') || clean.includes(' ') || clean.includes('\n')) {
     return false;
   }
@@ -65,37 +103,54 @@ export function getActiveAuthMethod(): GoogleSheetsConfig['authMethod'] {
 }
 
 /**
- * Mendapatkan status konfigurasi Google Sheets
+ * Mendapatkan status konfigurasi Google Sheets dengan detail diagnostik lengkap
  */
 export function getSheetsConfigStatus(): GoogleSheetsConfig {
   const method = getActiveAuthMethod();
   const isConfigured = method !== 'demo_mode';
 
+  let status: 'connected' | 'demo_mode' | 'error' = 'demo_mode';
   let message = 'Mode Data Lokal Aktif (Data tersimpan di server, siap dihubungkan ke Google Sheets)';
-  if (method === 'api_key') {
+
+  if (isConfigured) {
     if (lastErrorMessage) {
-      message = `Perhatian Sinkronisasi: ${lastErrorMessage}`;
+      status = 'error';
+      message = lastErrorMessage;
+    } else if (verifiedConnected) {
+      status = 'connected';
+      message =
+        method === 'api_key'
+          ? `Terhubung ke Google Spreadsheet "${lastSpreadsheetTitle || 'Aktif'}" via Google Sheets API v4 (API Key)`
+          : `Terhubung ke Google Spreadsheet "${lastSpreadsheetTitle || 'Aktif'}" via Service Account`;
     } else {
-      message = 'Terhubung ke Google Spreadsheet via Google Sheets API v4 (API Key)';
+      // Terkonfigurasi tetapi belum ditest
+      status = 'connected';
+      message =
+        method === 'api_key'
+          ? 'Kredensial API Key terpasang. Klik tombol "Tes Koneksi" untuk memverifikasi izin baca Google Sheets.'
+          : 'Kredensial Service Account terpasang. Klik "Tes Koneksi" untuk memverifikasi.';
     }
-  } else if (method === 'service_account') {
-    message = 'Terhubung ke Google Spreadsheet via Google Cloud Service Account';
   }
 
+  const cleanSheetId = extractSheetId(config.sheetId);
+
   return {
-    sheetId: isValidSheetId(config.sheetId) ? `${config.sheetId.slice(0, 6)}...${config.sheetId.slice(-4)}` : '',
+    sheetId: isValidSheetId(cleanSheetId) ? `${cleanSheetId.slice(0, 6)}...${cleanSheetId.slice(-4)}` : '',
     apiKey: isValidApiKey(config.apiKey) ? `${config.apiKey.slice(0, 5)}...${config.apiKey.slice(-3)}` : '',
     clientEmail: config.clientEmail ? `${config.clientEmail.slice(0, 8)}...` : '',
     authMethod: method,
     isConfigured,
-    status: isConfigured ? (lastErrorMessage ? 'error' : 'connected') : 'demo_mode',
+    status,
     message,
+    errorType: lastErrorType || undefined,
+    suggestions: lastSuggestions.length > 0 ? lastSuggestions : undefined,
+    spreadsheetTitle: lastSpreadsheetTitle || undefined,
     lastSynced: new Date().toISOString(),
   };
 }
 
 /**
- * Update runtime config
+ * Update runtime config dengan parsing cerdas (ekstrak URL & auto-detect JSON Service Account)
  */
 export function updateSheetsConfig(newConfig: {
   sheetId?: string;
@@ -104,12 +159,26 @@ export function updateSheetsConfig(newConfig: {
   privateKey?: string;
 }) {
   if (newConfig.sheetId !== undefined) {
-    config.sheetId = newConfig.sheetId.trim();
+    config.sheetId = extractSheetId(newConfig.sheetId);
   }
 
-  if (newConfig.apiKey !== undefined) {
+  // Cek apakah ada JSON Service Account yang ditempelkan
+  const possibleJson = newConfig.apiKey || newConfig.privateKey || '';
+  if (possibleJson.trim().startsWith('{') && possibleJson.includes('client_email')) {
+    try {
+      const parsed = JSON.parse(possibleJson);
+      if (parsed.client_email && parsed.private_key) {
+        config.clientEmail = parsed.client_email;
+        config.privateKey = parsed.private_key.replace(/\\n/g, '\n');
+        config.apiKey = '';
+      }
+    } catch {
+      // Abaikan jika bukan JSON valid
+    }
+  }
+
+  if (newConfig.apiKey !== undefined && !newConfig.apiKey.trim().startsWith('{')) {
     const rawKey = newConfig.apiKey.trim();
-    // Jika user tidak sengaja paste Service Account private key ke kolom API Key, pisahkan secara cerdas
     if (rawKey.includes('-----BEGIN PRIVATE KEY-----')) {
       config.privateKey = rawKey.replace(/\\n/g, '\n');
       config.apiKey = '';
@@ -122,13 +191,16 @@ export function updateSheetsConfig(newConfig: {
     config.clientEmail = newConfig.clientEmail.trim();
   }
 
-  if (newConfig.privateKey !== undefined) {
+  if (newConfig.privateKey !== undefined && !newConfig.privateKey.trim().startsWith('{')) {
     config.privateKey = newConfig.privateKey.replace(/\\n/g, '\n').trim();
   }
 
-  // Reset error state saat user memperbarui konfigurasi
+  // Reset status verifikasi saat user memperbarui konfigurasi
   lastFetchFailedAt = 0;
   lastErrorMessage = '';
+  lastErrorType = '';
+  lastSuggestions = [];
+  verifiedConnected = false;
 }
 
 /**
@@ -141,6 +213,10 @@ export function resetSheetsConfig() {
   config.privateKey = '';
   lastFetchFailedAt = 0;
   lastErrorMessage = '';
+  lastErrorType = '';
+  lastSuggestions = [];
+  lastSpreadsheetTitle = '';
+  verifiedConnected = false;
 }
 
 /**
@@ -167,7 +243,13 @@ function getServiceAccountClient() {
  * Dilengkapi graceful fallback tanpa console warning error
  */
 async function fetchSheetValuesWithApiKey(range: string): Promise<any[][] | null> {
-  if (!isValidSheetId(config.sheetId) || !isValidApiKey(config.apiKey)) {
+  const cleanId = extractSheetId(config.sheetId);
+  if (!isValidSheetId(cleanId) || !isValidApiKey(config.apiKey)) {
+    return null;
+  }
+
+  // Jika kunci adalah Hex Key ID Service Account, jangan kirim agar tidak memicu error 400
+  if (isHexKeyId(config.apiKey)) {
     return null;
   }
 
@@ -176,7 +258,7 @@ async function fetchSheetValuesWithApiKey(range: string): Promise<any[][] | null
     return null;
   }
 
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${config.sheetId}/values/${encodeURIComponent(
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(cleanId)}/values/${encodeURIComponent(
     range
   )}?key=${encodeURIComponent(config.apiKey)}`;
 
@@ -188,69 +270,200 @@ async function fetchSheetValuesWithApiKey(range: string): Promise<any[][] | null
       lastErrorMessage =
         errData?.error?.message ||
         `Akses sheet gagal (Status ${response.status}). Pastikan sharing spreadsheet: "Anyone with the link can view".`;
+      verifiedConnected = false;
       return null;
     }
 
     const data = await response.json();
     lastErrorMessage = '';
+    lastErrorType = '';
+    verifiedConnected = true;
     lastFetchFailedAt = 0;
     return data.values || [];
   } catch (err: any) {
     lastFetchFailedAt = Date.now();
     lastErrorMessage = err?.message || 'Gangguan koneksi ke Google Sheets API';
+    verifiedConnected = false;
     return null;
   }
 }
 
 /**
- * Tes koneksi ke Google Spreadsheet secara langsung via Google Sheets API v4
+ * Tes koneksi ke Google Spreadsheet secara komprehensif dengan diagnosa kesalahan ramah pengguna
  */
 export async function testSheetsConnection(): Promise<{
   success: boolean;
   message: string;
+  errorType?: string;
+  suggestions?: string[];
   sheetNames?: string[];
   spreadsheetTitle?: string;
+  foundExpectedSheets?: {
+    users: boolean;
+    saldo: boolean;
+    transaksi: boolean;
+  };
 }> {
   // Reset cooldown saat uji coba eksplisit
   lastFetchFailedAt = 0;
+  config.sheetId = extractSheetId(config.sheetId);
   const method = getActiveAuthMethod();
+
+  // A. Pengecekan awal: apakah user keliru memasukkan Key ID Service Account ke kolom API Key?
+  if (config.apiKey && isHexKeyId(config.apiKey)) {
+    const masked = `${config.apiKey.slice(0, 5)}...${config.apiKey.slice(-3)}`;
+    const msg = `Kunci yang dimasukkan (${masked}) berformat Hexadecimal. Ini adalah Key ID Service Account, bukan Google Cloud API Key.`;
+    lastErrorMessage = msg;
+    lastErrorType = 'SERVICE_ACCOUNT_KEY_ID_DETECTED';
+    lastSuggestions = [
+      'Google Cloud API Key resmi selalu diawali dengan "AIzaSy..." (39 karakter).',
+      'Buka Google Cloud Console > APIs & Services > Credentials > Create Credentials > API Key.',
+      'Jika Anda memiliki file JSON Service Account lengkap, Anda dapat menempelkannya di tab "Service Account".',
+    ];
+    verifiedConnected = false;
+    return {
+      success: false,
+      message: msg,
+      errorType: 'SERVICE_ACCOUNT_KEY_ID_DETECTED',
+      suggestions: lastSuggestions,
+    };
+  }
+
+  // B. Pengecekan jika belum ada konfigurasi
+  if (method === 'demo_mode') {
+    return {
+      success: false,
+      message: 'Belum ada Google Spreadsheet ID atau API Key / Service Account yang dikonfigurasi.',
+      errorType: 'UNKNOWN',
+      suggestions: [
+        'Buka tab "Pengaturan" lalu masukkan Spreadsheet ID dan Google Cloud API Key.',
+        'Atau tetap gunakan mode data lokal aplikasi yang sudah siap pakai.',
+      ],
+    };
+  }
 
   // 1. Tes koneksi langsung via Google Sheets API v4 (API Key)
   if (method === 'api_key') {
     try {
-      const metaUrl = `https://sheets.googleapis.com/v4/spreadsheets/${config.sheetId}?key=${encodeURIComponent(
-        config.apiKey
-      )}`;
+      const metaUrl = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+        config.sheetId
+      )}?key=${encodeURIComponent(config.apiKey)}`;
       const res = await fetch(metaUrl);
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
 
       if (!res.ok) {
-        const errorMsg =
-          data.error?.message ||
-          'Pastikan API Key benar dan akses Google Spreadsheet diatur ke: "Siapa saja yang memiliki link dapat melihat"';
-        lastErrorMessage = errorMsg;
+        verifiedConnected = false;
         lastFetchFailedAt = Date.now();
+        const rawMsg = data.error?.message || `HTTP ${res.status}`;
+        const rawStatus = data.error?.status || '';
+
+        // Klasifikasi error secara spesifik dan ramah
+        if (rawMsg.includes('API key not valid') || rawStatus === 'INVALID_ARGUMENT') {
+          lastErrorType = 'INVALID_API_KEY';
+          lastErrorMessage = 'API Key ditolak oleh Google Cloud: Kunci tidak valid atau tidak terdaftar.';
+          lastSuggestions = [
+            'Pastikan Anda menyalin API Key dari menu Google Cloud Console > APIs & Services > Credentials.',
+            'Kunci API resmi Google diawali dengan huruf "AIzaSy..." (panjang 39 karakter).',
+            'Jangan gunakan Key ID (format heksadesimal) dari Service Account.',
+          ];
+        } else if (
+          rawMsg.includes('has not been used') ||
+          rawMsg.includes('is disabled') ||
+          rawMsg.includes('Sheets API has not been used')
+        ) {
+          lastErrorType = 'API_NOT_ENABLED';
+          lastErrorMessage = 'Google Sheets API belum diaktifkan pada proyek Google Cloud Anda.';
+          lastSuggestions = [
+            'Buka Google Cloud Console > APIs & Services > Library.',
+            'Cari "Google Sheets API" lalu klik tombol "Enable" (Aktifkan).',
+            'Tunggu sekitar 1 menit agar aktivasi berlaku, kemudian klik "Tes Koneksi" kembali.',
+          ];
+        } else if (
+          rawMsg.includes('The caller does not have permission') ||
+          rawMsg.includes('PERMISSION_DENIED') ||
+          res.status === 403
+        ) {
+          lastErrorType = 'PERMISSION_DENIED';
+          lastErrorMessage = 'Akses Google Spreadsheet Ditolak: Dokumen belum dibuka untuk publik.';
+          lastSuggestions = [
+            'Buka file Google Spreadsheet Anda di browser.',
+            'Klik tombol "Bagikan" (Share) di pojok kanan atas.',
+            'Pada bagian "Akses umum" (General access), ubah dari "Dibatasi" menjadi "Siapa saja yang memiliki link dapat melihat" (Viewer).',
+          ];
+        } else if (res.status === 404 || rawMsg.includes('not found') || rawStatus === 'NOT_FOUND') {
+          lastErrorType = 'SHEET_NOT_FOUND';
+          lastErrorMessage = 'Dokumen Google Spreadsheet tidak ditemukan (404 Not Found).';
+          lastSuggestions = [
+            'Periksa kembali Spreadsheet ID Anda.',
+            'Salin ID yang benar dari URL spreadsheet di antara "/d/" dan "/edit".',
+          ];
+        } else {
+          lastErrorType = 'UNKNOWN';
+          lastErrorMessage = `Gagal akses Google Sheets API: ${rawMsg}`;
+          lastSuggestions = [
+            'Periksa koneksi internet server dan pastikan pengaturan Google Cloud Anda sudah benar.',
+          ];
+        }
+
         return {
           success: false,
-          message: `Gagal akses Google Sheets API v4: ${errorMsg}`,
+          message: lastErrorMessage,
+          errorType: lastErrorType,
+          suggestions: lastSuggestions,
         };
       }
 
-      const sheetNames = data.sheets?.map((s: any) => s.properties?.title || '') || [];
+      // Berhasil terhubung! Lakukan audit lembar kerja
+      const sheetTitles: string[] = (data.sheets || []).map((s: any) => s.properties?.title || '');
+      const spreadsheetTitle = data.properties?.title || 'Dokumen Keuangan Haji Puskesmas';
+      lastSpreadsheetTitle = spreadsheetTitle;
+
+      const hasUsers = sheetTitles.some((t) => t.trim().toLowerCase() === 'users');
+      const hasSaldo = sheetTitles.some((t) => t.trim().toLowerCase() === 'saldo');
+      const hasTransaksi = sheetTitles.some((t) => t.trim().toLowerCase() === 'transaksi');
+
+      verifiedConnected = true;
       lastErrorMessage = '';
-      lastFetchFailedAt = 0;
+      lastErrorType = '';
+      lastSuggestions = [];
+
+      const missing: string[] = [];
+      if (!hasUsers) missing.push('"Users"');
+      if (!hasSaldo) missing.push('"Saldo"');
+      if (!hasTransaksi) missing.push('"Transaksi"');
+
+      let successMsg = `Koneksi Berhasil! Terhubung ke spreadsheet "${spreadsheetTitle}" via Google Sheets API v4.`;
+      const suggestions: string[] = [];
+      if (missing.length > 0) {
+        successMsg += ` Catatan: Lembar kerja ${missing.join(', ')} belum dibuat di spreadsheet.`;
+        suggestions.push(
+          `Buka spreadsheet dan buat lembar baru dengan nama ${missing.join(', ')} sesuai panduan di tab "3 Sheet".`
+        );
+      }
+
       return {
         success: true,
-        message: `Koneksi Google Sheets API v4 Berhasil! Terhubung ke dokumen "${data.properties?.title}"`,
-        sheetNames,
-        spreadsheetTitle: data.properties?.title,
+        message: successMsg,
+        sheetNames: sheetTitles,
+        spreadsheetTitle,
+        foundExpectedSheets: {
+          users: hasUsers,
+          saldo: hasSaldo,
+          transaksi: hasTransaksi,
+        },
+        suggestions: suggestions.length > 0 ? suggestions : undefined,
       };
     } catch (err: any) {
+      verifiedConnected = false;
       lastFetchFailedAt = Date.now();
-      lastErrorMessage = err.message || 'Koneksi gagal';
+      lastErrorType = 'NETWORK_ERROR';
+      lastErrorMessage = `Gagal menghubungi Google Sheets API: ${err?.message || 'Gangguan jaringan'}`;
+      lastSuggestions = ['Pastikan server dapat mengakses endpoint https://sheets.googleapis.com'];
       return {
         success: false,
-        message: `Gagal menghubungi Google Sheets API: ${err.message}`,
+        message: lastErrorMessage,
+        errorType: 'NETWORK_ERROR',
+        suggestions: lastSuggestions,
       };
     }
   }
@@ -259,30 +472,75 @@ export async function testSheetsConnection(): Promise<{
   if (method === 'service_account') {
     const client = getServiceAccountClient();
     if (!client) {
+      lastErrorType = 'UNKNOWN';
+      lastErrorMessage = 'Kredensial Service Account belum lengkap atau format Private Key salah.';
+      lastSuggestions = [
+        'Pastikan Client Email dan Private Key diisi lengkap.',
+        'Private Key harus berformat PEM valid (diawali -----BEGIN PRIVATE KEY-----).',
+      ];
+      verifiedConnected = false;
       return {
         success: false,
-        message: 'Kredensial Service Account belum lengkap atau format kunci tidak valid.',
+        message: lastErrorMessage,
+        errorType: 'UNKNOWN',
+        suggestions: lastSuggestions,
       };
     }
+
     try {
       const res = await client.spreadsheets.get({ spreadsheetId: config.sheetId });
-      const sheetNames = res.data.sheets?.map((s) => s.properties?.title || '') || [];
+      const sheetTitles = res.data.sheets?.map((s) => s.properties?.title || '') || [];
+      const spreadsheetTitle = res.data.properties?.title || config.sheetId;
+      lastSpreadsheetTitle = spreadsheetTitle;
+
+      const hasUsers = sheetTitles.some((t) => t.trim().toLowerCase() === 'users');
+      const hasSaldo = sheetTitles.some((t) => t.trim().toLowerCase() === 'saldo');
+      const hasTransaksi = sheetTitles.some((t) => t.trim().toLowerCase() === 'transaksi');
+
+      verifiedConnected = true;
+      lastErrorMessage = '';
+      lastErrorType = '';
+      lastSuggestions = [];
+
       return {
         success: true,
-        message: `Berhasil terhubung ke spreadsheet "${res.data.properties?.title || config.sheetId}" via Service Account`,
-        sheetNames,
+        message: `Berhasil terhubung ke spreadsheet "${spreadsheetTitle}" via Service Account.`,
+        sheetNames: sheetTitles,
+        spreadsheetTitle,
+        foundExpectedSheets: {
+          users: hasUsers,
+          saldo: hasSaldo,
+          transaksi: hasTransaksi,
+        },
       };
     } catch (err: any) {
+      verifiedConnected = false;
+      lastFetchFailedAt = Date.now();
+      const rawMsg = err.message || '';
+      if (rawMsg.includes('permission') || rawMsg.includes('403')) {
+        lastErrorType = 'PERMISSION_DENIED';
+        lastErrorMessage = `Akses ditolak: Dokumen belum dibagikan ke Service Account (${config.clientEmail}).`;
+        lastSuggestions = [
+          `Buka Google Spreadsheet > Klik "Bagikan" (Share) > Tambahkan email Service Account (${config.clientEmail}) sebagai Editor.`,
+        ];
+      } else {
+        lastErrorType = 'UNKNOWN';
+        lastErrorMessage = `Gagal mengakses Google Spreadsheet: ${rawMsg}`;
+        lastSuggestions = ['Periksa Spreadsheet ID dan pastikan Service Account diizinkan mengakses dokumen.'];
+      }
+
       return {
         success: false,
-        message: `Gagal mengakses Google Spreadsheet: ${err.message || 'Periksa izin Share ke Service Account'}`,
+        message: lastErrorMessage,
+        errorType: lastErrorType,
+        suggestions: lastSuggestions,
       };
     }
   }
 
   return {
     success: false,
-    message: 'Belum ada API Key valid yang dikonfigurasi. Aplikasi berjalan dalam mode data lokal.',
+    message: 'Metode koneksi tidak dikenali. Silakan masukkan API Key atau Service Account.',
   };
 }
 

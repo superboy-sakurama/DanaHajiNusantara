@@ -3,6 +3,7 @@ import {
   getSheetsConfigStatus,
   testSheetsConnection,
   updateSheetsConfig,
+  resetSheetsConfig,
 } from '../googleSheets.ts';
 import { requireAuth, requireAdmin } from '../auth.ts';
 
@@ -36,6 +37,15 @@ router.post('/config', requireAuth, requireAdmin, (req: Request, res: Response) 
   res.json({
     success: true,
     message: 'Konfigurasi Google Sheets berhasil diperbarui!',
+    data: getSheetsConfigStatus(),
+  });
+});
+
+router.post('/reset', requireAuth, requireAdmin, (req: Request, res: Response) => {
+  resetSheetsConfig();
+  res.json({
+    success: true,
+    message: 'Konfigurasi berhasil direset kembali ke Mode Data Lokal.',
     data: getSheetsConfigStatus(),
   });
 });

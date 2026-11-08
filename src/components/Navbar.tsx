@@ -43,8 +43,10 @@ export const Navbar: React.FC<NavbarProps> = ({ sheetConfig, onOpenSheetModal })
             type="button"
             onClick={onOpenSheetModal}
             className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-all cursor-pointer ${
-              sheetConfig?.isConfigured
+              sheetConfig?.status === 'connected'
                 ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/25'
+                : sheetConfig?.status === 'error'
+                ? 'bg-rose-500/20 border-rose-400/40 text-rose-300 hover:bg-rose-500/30'
                 : 'bg-purple-500/20 border-purple-400/30 text-purple-200 hover:bg-purple-500/30'
             }`}
             title="Klik untuk melihat konfigurasi Google Spreadsheet"
@@ -52,13 +54,19 @@ export const Navbar: React.FC<NavbarProps> = ({ sheetConfig, onOpenSheetModal })
           >
             <Database className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">
-              {sheetConfig?.isConfigured ? 'Sheets Terhubung' : 'Google Sheets'}
+              {sheetConfig?.status === 'connected'
+                ? 'Sheets Terhubung'
+                : sheetConfig?.status === 'error'
+                ? 'Periksa Sheets'
+                : 'Data Lokal'}
             </span>
             <span
               className={`w-2 h-2 rounded-full ${
-                sheetConfig?.isConfigured
+                sheetConfig?.status === 'connected'
                   ? 'bg-emerald-400 animate-pulse'
-                  : 'bg-amber-400'
+                  : sheetConfig?.status === 'error'
+                  ? 'bg-rose-400'
+                  : 'bg-purple-400'
               }`}
             />
           </button>

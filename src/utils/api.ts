@@ -5,6 +5,7 @@ import {
   SaldoRecord,
   Transaction,
   GoogleSheetsConfig,
+  SheetsTestResult,
 } from '../types/index.ts';
 
 const TOKEN_KEY = 'haji_finance_auth_token';
@@ -128,11 +129,10 @@ export const api = {
     return res.data!;
   },
 
-  async testSheetsConnection(): Promise<{ success: boolean; message: string; sheetNames?: string[] }> {
-    const res = await request<ApiResponse<{ success: boolean; message: string; sheetNames?: string[] }>>(
-      '/api/sheets/test',
-      { method: 'POST' }
-    );
+  async testSheetsConnection(): Promise<SheetsTestResult> {
+    const res = await request<ApiResponse<SheetsTestResult>>('/api/sheets/test', {
+      method: 'POST',
+    });
     return res.data!;
   },
 
@@ -145,6 +145,13 @@ export const api = {
     const res = await request<ApiResponse<GoogleSheetsConfig>>('/api/sheets/config', {
       method: 'POST',
       body: JSON.stringify(data),
+    });
+    return res.data!;
+  },
+
+  async resetSheetsConfig(): Promise<GoogleSheetsConfig> {
+    const res = await request<ApiResponse<GoogleSheetsConfig>>('/api/sheets/reset', {
+      method: 'POST',
     });
     return res.data!;
   },
